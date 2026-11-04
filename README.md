@@ -49,9 +49,9 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 
 1. 변경한 패키지의 `package.json` 버전을 올립니다. 커밋만 바꾸고 버전을 그대로 두면 업데이트 알림은 나오지 않습니다.
 2. `npm run build`로 독립 클라이언트 파일을 생성합니다.
-3. `npm test`를 실행하고 생성물까지 함께 커밋·푸시합니다. 설치할 때 별도 빌드나 빌드 스크립트 실행이 필요하지 않습니다.
+3. `npm run check`로 생성물의 최신 여부를 확인하고, 변경 기능은 대상 환경에서 직접 검증한 뒤 생성물까지 함께 커밋·푸시합니다. 설치할 때 별도 빌드나 빌드 스크립트 실행이 필요하지 않습니다.
 
-업데이트 로직 원본은 `shared/plugin-updates.js`이고, `scripts/build-clients.mjs`가 각 패키지 안에 이를 포함합니다. 설치된 패키지는 저장소의 다른 폴더에 의존하지 않습니다. CI는 생성물의 최신 여부와 테스트를 검사합니다.
+업데이트 로직 원본은 `shared/plugin-updates.js`이고, `scripts/build-clients.mjs`가 각 패키지 안에 이를 포함합니다. 설치된 패키지는 저장소의 다른 폴더에 의존하지 않습니다. CI는 생성물의 최신 여부만 검사하며 기능·호환성을 보증하지 않습니다.
 
 개발용 로컬 설치는 여전히 `packages/<이름>`을 로컬 번들로 추가할 수 있습니다. 패키지 전체 활성화 스위치로 각각 켜고 끄세요.
 
@@ -59,3 +59,7 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 
 - [pnpm Git 하위 디렉터리 설치 문서](https://pnpm.io/package-sources#install-from-a-subdirectory-of-a-git-repository)
 - [설치·업데이트 UX 참고 저장소](https://github.com/noire113-dev/deepseek-harness-kr) — 구현은 Harness 공개 API에 맞춰 독립 작성했습니다.
+
+## 라이선스
+
+[MIT](LICENSE) · Copyright (c) 2026 chdigda

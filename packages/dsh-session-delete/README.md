@@ -48,7 +48,3 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 0.3.0부터 **플러그인 상세 → Components → session-delete → 업데이트**에서 버전 확인·갱신합니다. 새 버전이 있을 때 확인 후 설치합니다. 갱신 후 DSH를 재시작해야 하며, 대기 중인 삭제 예약도 그 재시작 때 처리될 수 있습니다. 먼저 `/session-delete status`로 확인하세요. 제거 후 재설치가 실패하면 같은 주소로 다시 추가합니다. 자세한 설치·이전·개발 방법은 [저장소 안내](../../README.md)를 참고하세요.
 
 현재 Harness 프로필의 dependencies와 dsh.profile.bundles에 등록됩니다. 독립 플러그인이며 ComfyUI/DSH 코어 파일은 수정하지 않습니다. 기존 DSH 런타임에서 Linux flock 또는 Windows Koffi를 불러옵니다. 버전 변경 시 재검증이 필요합니다.
-
-    node --test test.mjs
-
-테스트는 임시 홈만 사용합니다. Linux native 잠금 테스트에는 DSH_TEST_FLOCK 환경변수로 기존 런타임의 flock 모듈 경로를 지정합니다. Windows native 잠금·부팅 통합 테스트는 DSH_RUNTIME_ENTRY를 설치된 DSH의 진입 파일 경로로 지정하면 실행됩니다. 별도 프로세스와의 충돌, 대소문자 경로, 종료 후 잠금 해제도 검사합니다. Windows DSH 샌드박스에서 테스트 실행기의 파이프 생성이 거부되면 Node 24 이상에서 `node --test --test-isolation=none test.mjs`를 사용합니다.

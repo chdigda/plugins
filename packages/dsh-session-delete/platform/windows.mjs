@@ -21,7 +21,6 @@ async function bindings(req) {
     module = await import(pathToFileURL(req.resolve('koffi')).href);
   }
   const kernel32 = (module.default || module).load('kernel32.dll');
-  // HANDLE is pointer-sized on x64 and ARM64. Never coerce it to a 32-bit integer.
   return {
     create: kernel32.func('__stdcall', 'CreateSemaphoreW', 'intptr', ['void*', 'int', 'int', 'str16']),
     wait: kernel32.func('__stdcall', 'WaitForSingleObject', 'uint', ['intptr', 'uint']),
@@ -31,11 +30,6 @@ async function bindings(req) {
   };
 }
 
-/**
- * Acquire the rc5 Local named semaphore for a session's lock path, without files.
- * req must be the require function supplied by runtimeRequire().
- * Contention rejects with code EBUSY; close releases once and always attempts CloseHandle.
- */
 export async function acquireLock(path, req) {
   const api = await bindings(req);
   const name = 'Local\\dsh-session-lock-' + createHash('sha256').update(resolve(path).toLowerCase()).digest('hex');
@@ -46,7 +40,6 @@ export async function acquireLock(path, req) {
   try {
     const result = api.wait(handle, 0);
     if (result !== WAIT_OBJECT_0) {
-      // Preserve GetLastError before CloseHandle can overwrite it.
       throw win32Error('WaitForSingleObject', result === WAIT_TIMEOUT ? 32 : api.lastError(), path, name);
     }
   } catch (error) {
@@ -62,7 +55,6 @@ export async function acquireLock(path, req) {
   return {
     async close() {
       if (closed) return;
-      // Set before native calls: concurrent/repeated closes must never double-release.
       closed = true;
       let failure;
       try {

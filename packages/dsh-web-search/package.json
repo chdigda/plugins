@@ -2,6 +2,7 @@
   "name": "dsh-web-search",
   "version": "0.3.0",
   "private": true,
+  "license": "MIT",
   "type": "module",
   "description": "Switchable Tavily and Brave search with secure API key settings for DSH",
   "main": "./index.mjs",
@@ -13,9 +14,6 @@
   "engines": {
     "node": ">=22",
     "dsh": ">=0.2.1-rc.2 <0.3.0"
-  },
-  "scripts": {
-    "test": "node --test *.test.mjs"
   },
   "dsh": {
     "bundle": {

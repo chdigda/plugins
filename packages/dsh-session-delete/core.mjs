@@ -203,7 +203,6 @@ export async function indexFiles(path) {
 export async function lockFile(home, path, lock) {
   await safePath(home, dirname(path), 'directory');
   await safePath(home, path, 'file', true);
-  // Windows uses the same named semaphore as DSH, with no lock-file footprint.
   if (typeof lock !== 'function') return lock.acquire(path);
   const file = await open(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {

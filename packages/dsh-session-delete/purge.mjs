@@ -20,7 +20,6 @@ async function main() {
   if (plan.home !== home || plan.ticket !== ticket || plan.rootId !== id) throw new Error('예약과 확인 ID가 일치하지 않습니다.');
   validateStructure(plan);
   const tryLockExclusive = await loadLock(runtimeRequire());
-  // A running plugin host owns this lock, including its workspace/search caches.
   const runtimeDir = join(home, 'session-delete-requests');
   await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
   const hostLock = await lockFile(home, join(runtimeDir, 'runtime.lock'), tryLockExclusive);

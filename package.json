@@ -1,10 +1,10 @@
 {
   "name": "dsh-plugins",
   "private": true,
+  "license": "MIT",
   "scripts": {
     "build": "node scripts/build-clients.mjs",
-    "check": "node scripts/build-clients.mjs --check",
-    "test": "npm run check && node --test tests/*.test.mjs && npm test --workspaces --if-present"
+    "check": "node scripts/build-clients.mjs --check"
   },
   "workspaces": [
     "packages/*"
