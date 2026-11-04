@@ -4,7 +4,7 @@ DeepSeek Harness용 독립 플러그인 모음입니다. 저장소와 개발 브
 
 | 플러그인 | 기능 |
 | --- | --- |
-| [dsh-session-delete](packages/dsh-session-delete/README.md) | 확인 후 다음 DSH 재시작 때 세션 영구 삭제 (Linux / Node 24) |
+| [dsh-session-delete](packages/dsh-session-delete/README.md) | 확인 후 다음 DSH 재시작 때 세션 영구 삭제 (Linux·Windows / Node 24+) |
 | [dsh-web-search](packages/dsh-web-search/README.md) | Tavily 검색, Brave 대체 검색, API 키 설정 화면 |
 
 ## Harness에서 설치

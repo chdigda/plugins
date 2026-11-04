@@ -10,7 +10,11 @@ import { DatabaseSync } from 'node:sqlite';
 import { inventory, makePlan, savePlan, purge, safePath, assertOffline, validatePlan, indexFiles, digest } from './core.mjs';
 import { createHandler } from './index.mjs';
 import { processRequests, readRequests } from './requests.mjs';
-import { oncePerProcess } from './boot.mjs';
+import { oncePerProcess, apply as bootApply, validateGateEntries } from './boot.mjs';
+import { loadLock, isWindows } from './platform/index.mjs';
+import { runtimeRequire, processIdentity } from './runtime.mjs';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const unlocked = async () => {};
 async function fixture(t) {
@@ -91,7 +95,7 @@ test('new descendant invalidates prior confirmation', async t => {
 test('symlink and traversal are refused', async t => {
   const f = await fixture(t);
   await assert.rejects(safePath(f.home, join(f.home, '../outside')), /범위/);
-  await symlink(f.otherDir, join(f.home, 'sessions/project', randomUUID()));
+  await symlink(f.otherDir, join(f.home, 'sessions/project', randomUUID()), process.platform === 'win32' ? 'junction' : 'dir');
   await assert.rejects(inventory(f.home), /일반 파일/);
 });
 test('active write lock refuses all deletion', async t => {
@@ -204,5 +208,131 @@ test('real native DSH flock rejects another writer', { skip: !process.env.DSH_TE
   finally { await held.close(); }
   assert.equal((await inventory(f.home)).length, 2);
   await purge(plan, path, tryLockExclusive, unlocked);
+  assert.equal((await inventory(f.home)).length, 1);
+});
+
+const nativeWindows = isWindows && Boolean(process.env.DSH_RUNTIME_ENTRY);
+function child(mode, path) {
+  // inherit stdio: no captured pipes (also works inside the Windows DSH sandbox).
+  const result = spawnSync(process.execPath, [fileURLToPath(new URL('./test-process.mjs', import.meta.url)), mode, path], {
+    stdio: 'inherit', timeout: 15000,
+  });
+  if (result.error) throw result.error;
+  return result.status;
+}
+test('process identity survives hot reload and changes across processes', async t => {
+  const f = await fixture(t);
+  const id = await processIdentity();
+  const reloaded = await import('./platform/index.mjs?reload=' + randomUUID());
+  assert.equal(await reloaded.processIdentity(), id);
+  const output = join(f.home, 'identity.txt');
+  assert.equal(child('identity', output), 0);
+  assert.notEqual(await readFile(output, 'utf8'), id);
+});
+test('nested junction path is rejected before following an ordinary file', async t => {
+  const f = await fixture(t);
+  const link = join(f.home, 'alias');
+  await symlink(f.otherDir, link, isWindows ? 'junction' : 'dir');
+  await assert.rejects(safePath(f.home, join(link, 'session.lock')), /일반 파일/);
+});
+test('Windows accepts case-only root spelling differences', { skip: !isWindows }, async t => {
+  const f = await fixture(t);
+  assert.equal(await safePath(f.home.toUpperCase(), join(f.otherDir, 'session.lock')), true);
+});
+test('boot gate still rejects missing service dependencies', () => {
+  assert.throws(() => validateGateEntries([]), /초기화 순서/);
+});
+test('Windows native lock interoperates with another DSH-protocol process', { skip: !nativeWindows }, async t => {
+  const f = await fixture(t); const { plan, path } = await f.queued();
+  const lock = await loadLock(runtimeRequire());
+  const target = join(f.rootDir, 'session.lock');
+  const held = await lock.acquire(target);
+  try {
+    assert.equal(child('probe', target.toUpperCase()), 23);
+    await assert.rejects(purge(plan, path, lock, unlocked), { code: 'EBUSY' });
+    assert.equal((await inventory(f.home)).length, 2);
+  } finally { await held.close(); await held.close(); }
+  assert.equal(child('probe', target), 0);
+  await purge(plan, path, lock, unlocked);
+  assert.equal((await inventory(f.home)).length, 1);
+  assert.deepEqual(await readdir(join(f.home, 'session-deletions')), [plan.ticket + '.json']);
+});
+test('Windows process death releases last semaphore handle', { skip: !nativeWindows }, async t => {
+  const f = await fixture(t); const target = join(f.otherDir, 'session.lock');
+  assert.equal(child('crash', target), 0);
+  const lock = await loadLock(runtimeRequire());
+  const held = await lock.acquire(target); await held.close();
+});
+test('Windows home-wide lock excludes unrelated purge operations', { skip: !nativeWindows }, async t => {
+  const f = await fixture(t); const { plan, path } = await f.queued();
+  const lock = await loadLock(runtimeRequire());
+  const held = await lock.acquire(join(f.home, 'session-deletions/purge.lock'));
+  try { await assert.rejects(purge(plan, path, lock, unlocked), { code: 'EBUSY' }); }
+  finally { await held.close(); }
+  await purge(plan, path, lock, unlocked);
+});
+test('Windows startup processes pending request through real platform adapter', { skip: !nativeWindows }, async t => {
+  const f = await fixture(t);
+  await createHandler(commandContext(f), f.home)({ rawInput: '', agent: { session: { id: f.root } } });
+  const savedHome = process.env.DSH_HOME;
+  const savedSession = process.env.DSH_SESSION_ID;
+  process.env.DSH_HOME = f.home; delete process.env.DSH_SESSION_ID;
+  let ready;
+  const modules = [['session','@deepseek-ai/dsh-session'], ['session-persistence-jsonl','@deepseek-ai/dsh-session-persistence-jsonl'], ['storage','@deepseek-ai/dsh-storage']];
+  const ctx = {
+    get(name) { return name === 'loader' ? { entries: () => modules.map(([id, name]) => ({ options: { id, name, inject: ['sessionDeleteReady'] } })) } : undefined; },
+    provide(name, value) { assert.equal(name, 'sessionDeleteReady'); ready = value; },
+    logger: { warn(message) { assert.fail(message); } },
+  };
+  try {
+    await bootApply(ctx);
+    assert.equal(ready.results[0].phase, 'complete');
+    assert.equal((await inventory(f.home)).length, 1);
+    const first = ready;
+    await bootApply(ctx); assert.equal(ready, first);
+  } finally {
+    await ready?.handle?.close();
+    if (savedHome === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = savedHome;
+    if (savedSession === undefined) delete process.env.DSH_SESSION_ID; else process.env.DSH_SESSION_ID = savedSession;
+  }
+});
+
+test('all acquired locks are closed even when one release fails', async t => {
+  const f = await fixture(t); const { plan, path } = await f.queued();
+  const released = [];
+  const lock = { async acquire(path) { return { async close() {
+    released.push(path);
+    if (released.length === 1) throw new Error('simulated release failure');
+  } }; } };
+  await assert.rejects(purge(plan, path, lock, unlocked), AggregateError);
+  assert.equal(released.length, 2);
+});
+test('release errors do not hide the original deletion failure', async t => {
+  const f = await fixture(t); const { plan, path } = await f.queued();
+  await writeFile(join(f.rootDir, 'session.v3.jsonl'), 'new generation');
+  const lock = { async acquire() { return { async close() { throw new Error('release failure'); } }; } };
+  await assert.rejects(purge(plan, path, lock, unlocked), error => {
+    assert.match(error.message, /새 로그/);
+    assert.equal(error.cleanupErrors.length, 2);
+    return true;
+  });
+});
+
+test('Windows recovery CLI refuses a live plugin host then succeeds after release', { skip: !nativeWindows }, async t => {
+  const f = await fixture(t); const { plan } = await f.queued();
+  const lock = await loadLock(runtimeRequire());
+  await mkdir(join(f.home, 'session-delete-requests'));
+  const held = await lock.acquire(join(f.home, 'session-delete-requests/runtime.lock'));
+  const invoke = () => {
+    const env = { ...process.env }; delete env.DSH_SESSION_ID;
+    const result = spawnSync(process.execPath, [fileURLToPath(new URL('./purge.mjs', import.meta.url)), '--home', f.home, '--ticket', plan.ticket, '--confirm', f.root], {
+      stdio: 'inherit', env, timeout: 15000,
+    });
+    if (result.error) throw result.error;
+    return result.status;
+  };
+  try { assert.equal(invoke(), 1); assert.equal((await inventory(f.home)).length, 2); }
+  finally { await held.close(); }
+  assert.equal(invoke(), 0);
   assert.equal((await inventory(f.home)).length, 1);
 });

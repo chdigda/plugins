@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-delete",
-  "version": "0.3.0",
+  "version": "0.3.1",
   "private": true,
   "type": "module",
   "description": "Confirmed permanent session deletion on the next DSH restart",
@@ -45,6 +45,9 @@
     "index.mjs",
     "boot.mjs",
     "runtime.mjs",
+    "platform/index.mjs",
+    "platform/linux.mjs",
+    "platform/windows.mjs",
     "core.mjs",
     "requests.mjs",
     "purge.mjs",

@@ -1,6 +1,8 @@
 import { createReadStream, constants } from 'node:fs';
 import { lstat, readdir, realpath, readFile, rename, unlink, mkdir, open } from 'node:fs/promises';
-import { resolve, relative, join, dirname, basename, isAbsolute } from 'node:path';
+import { resolve, relative, join, dirname, basename, isAbsolute, sep } from 'node:path';
+import { assertOwner, syncDirectory, assertOffline } from './platform/index.mjs';
+export { assertOffline };
 import { createHash, randomUUID } from 'node:crypto';
 import { createZstdDecompress } from 'node:zlib';
 
@@ -15,9 +17,9 @@ export async function safePath(root, path, kind = 'file', optional = false) {
   root = resolve(root); path = resolve(path);
   const rel = relative(root, path);
   if (!rel || rel.startsWith('..') || isAbsolute(rel)) throw new Error('저장 경로 범위를 벗어났습니다: ' + path);
-  if (await realpath(root) !== root) throw new Error('심볼릭 링크 저장 루트는 지원하지 않습니다.');
+  if (relative(await realpath(root), root) !== '') throw new Error('심볼릭 링크 저장 루트는 지원하지 않습니다.');
   let current = root;
-  const parts = rel.split('/');
+  const parts = rel.split(sep);
   for (let i = 0; i < parts.length; i++) {
     current = join(current, parts[i]);
     let info;
@@ -26,8 +28,9 @@ export async function safePath(root, path, kind = 'file', optional = false) {
       throw e;
     }
     const directory = i < parts.length - 1 || kind === 'directory';
-    if (directory ? !info.isDirectory() : !info.isFile()) throw new Error('일반 파일/디렉터리가 아닙니다: ' + current);
-    if (info.uid !== process.getuid()) throw new Error('다른 사용자의 파일은 삭제하지 않습니다: ' + current);
+    if (info.isSymbolicLink() || (directory ? !info.isDirectory() : !info.isFile())) throw new Error('일반 파일/디렉터리가 아닙니다: ' + current);
+    if (relative(await realpath(current), current) !== '') throw new Error('일반 파일/디렉터리가 아닙니다 (링크 경로): ' + current);
+    assertOwner(info, current);
   }
   return true;
 }
@@ -112,10 +115,6 @@ export async function atomicJson(path, data) {
   try { await rename(tmp, path); } catch (e) { await unlink(tmp); throw e; }
   await syncDirectory(dirname(path));
 }
-async function syncDirectory(path) {
-  const dir = await open(path, 'r');
-  try { await dir.sync(); } finally { await dir.close(); }
-}
 export async function savePlan(home, plan) {
   const queue = join(home, 'session-deletions');
   await mkdir(queue, { recursive: true, mode: 0o700 });
@@ -123,20 +122,6 @@ export async function savePlan(home, plan) {
   const ticket = randomUUID();
   await atomicJson(join(queue, ticket + '.json'), { ...plan, ticket, phase: 'queued' });
   return ticket;
-}
-export async function assertOffline() {
-  if (process.platform !== 'linux') throw new Error('이 버전의 오프라인 삭제는 Linux 전용입니다.');
-  if (process.env.DSH_SESSION_ID) throw new Error('DSH 내부에서는 실행할 수 없습니다. 모든 DSH를 종료하고 일반 터미널에서 실행하세요.');
-  const running = [];
-  for (const pid of await readdir('/proc')) {
-    if (!/^\d+$/.test(pid) || Number(pid) === process.pid) continue;
-    try {
-      if ((await lstat('/proc/' + pid)).uid !== process.getuid()) continue;
-      const args = (await readFile('/proc/' + pid + '/cmdline', 'utf8')).split('\0');
-      if (args.some(a => /(?:^|\/)dsh(?:$|\.(?:mjs|cjs|js)$)/.test(a) || /\/dsh\/lib\//.test(a))) running.push(pid);
-    } catch (e) { if (!['ENOENT', 'ESRCH'].includes(e.code)) throw e; }
-  }
-  if (running.length) throw new Error('실행 중인 DSH 프로세스를 먼저 종료하세요: ' + running.join(', '));
 }
 export function validateStructure(plan) {
   if (plan.version !== VERSION || !['queued','deleting'].includes(plan.phase) || !Array.isArray(plan.targets) || !plan.targets.length) throw new Error('잘못된 삭제 예약입니다.');
@@ -199,7 +184,7 @@ export async function indexFiles(path) {
   const parent = dirname(path);
   let parentInfo;
   try { parentInfo = await lstat(parent); } catch (error) { if (error.code === 'ENOENT') return []; throw error; }
-  if (parentInfo.uid !== process.getuid()) throw new Error('검색 인덱스 소유자가 다릅니다.');
+  assertOwner(parentInfo, parent);
   const files = [];
   for (const suffix of ['', '-wal', '-shm', '-journal']) if (await safePath(parent, path + suffix, 'file', true)) files.push(path + suffix);
   if (!files.includes(path)) {
@@ -218,6 +203,8 @@ export async function indexFiles(path) {
 export async function lockFile(home, path, lock) {
   await safePath(home, dirname(path), 'directory');
   await safePath(home, path, 'file', true);
+  // Windows uses the same named semaphore as DSH, with no lock-file footprint.
+  if (typeof lock !== 'function') return lock.acquire(path);
   const file = await open(path, constants.O_CREAT | constants.O_RDWR | constants.O_NOFOLLOW, 0o600);
   try {
     await lock(file.fd);
@@ -236,6 +223,7 @@ export async function purge(plan, planPath, lock, checkOffline = assertOffline) 
   await checkOffline();
   await safePath(plan.home, planPath);
   const held = [];
+  let failure;
   try {
     if (planPath !== join(plan.home, 'session-deletions', assertId(plan.ticket) + '.json')) throw new Error('예약 경로가 일치하지 않습니다.');
     const locks = [join(plan.home, 'session-deletions/purge.lock'), ...plan.targets.map(target => join(target.dir, 'session.lock'))];
@@ -262,5 +250,17 @@ export async function purge(plan, planPath, lock, checkOffline = assertOffline) 
     plan.phase = 'complete';
     await atomicJson(planPath, { version: VERSION, ticket: plan.ticket, phase: 'complete', deletedIds: [...ids], completedAt: new Date().toISOString() });
     return [...ids];
-  } finally { for (const file of held.reverse()) await file.close(); }
+  } catch (error) {
+    failure = error;
+    throw error;
+  } finally {
+    const errors = [];
+    for (const file of held.reverse()) {
+      try { await file.close(); } catch (error) { errors.push(error); }
+    }
+    if (errors.length) {
+      if (failure) failure.cleanupErrors = errors;
+      else throw new AggregateError(errors, '삭제 잠금 해제에 실패했습니다.');
+    }
+  }
 }

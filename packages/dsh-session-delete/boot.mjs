@@ -1,6 +1,6 @@
 import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { loadLock } from './platform/index.mjs';
 import { lockFile, assertOffline } from './core.mjs';
 import { processRequests } from './requests.mjs';
 import { runtimeRequire, dshHome, processIdentity } from './runtime.mjs';
@@ -27,7 +27,7 @@ export async function apply(ctx) {
     const loader = ctx.get('loader');
     if (!loader) throw new Error('DSH 부팅 로더가 없어 자동 삭제를 시작할 수 없습니다.');
     validateGateEntries([...loader.entries()]);
-    const { tryLockExclusive } = await import(pathToFileURL(req.resolve('@deepseek-ai/node-addon-system/flock')).href);
+    const tryLockExclusive = await loadLock(req);
     const dir = join(home, 'session-delete-requests');
     await mkdir(dir, { recursive: true, mode: 0o700 });
     const handle = await lockFile(home, join(dir, 'runtime.lock'), tryLockExclusive);

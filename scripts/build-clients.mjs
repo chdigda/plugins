@@ -1,6 +1,7 @@
 import { readFile, writeFile } from 'node:fs/promises';
 const root = new URL('../', import.meta.url);
-const read = path => readFile(new URL(path, root), 'utf8');
+// Git may check out CRLF on Windows; generated content is compared as LF.
+const read = async path => (await readFile(new URL(path, root), 'utf8')).replace(/\r\n/g, '\n');
 const shared = await read('shared/plugin-updates.js');
 const checking = process.argv.includes('--check');
 async function output(path, content) {

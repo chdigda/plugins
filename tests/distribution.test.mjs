@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile, access } from 'node:fs/promises';
 import vm from 'node:vm';
+import { posix } from 'node:path';
 
 const root = new URL('../', import.meta.url);
 for (const name of ['dsh-web-search', 'dsh-session-delete']) {
@@ -9,7 +10,7 @@ for (const name of ['dsh-web-search', 'dsh-session-delete']) {
     const base = new URL('packages/' + name + '/', root);
     const p = JSON.parse(await readFile(new URL('package.json', base), 'utf8'));
     assert.equal(p.name, name);
-    assert.equal(p.version, '0.3.0');
+    assert.equal(p.version, name === 'dsh-session-delete' ? '0.3.1' : '0.3.0');
     assert.equal(p.dsh.client.platform, 'web');
     assert.ok(!p.scripts.prepare && !p.scripts.postinstall && !p.scripts.install);
     for (const path of [...p.files, ...Object.values(p.exports), p.dsh.bundle.patch]) await access(new URL(path, base));
@@ -17,7 +18,7 @@ for (const name of ['dsh-web-search', 'dsh-session-delete']) {
       const code = await readFile(new URL(file, base), 'utf8');
       for (const [, target] of code.matchAll(/from ['"]([^'"]+)['"]/g)) if (target.startsWith('.')) {
         assert.ok(!target.includes('../'), 'no monorepo parent imports');
-        assert.ok(p.files.includes(target.slice(2)), target + ' must ship');
+        assert.ok(p.files.includes(posix.normalize(posix.join(posix.dirname(file), target))), target + ' must ship');
       }
     }
     const code = await readFile(new URL(p.exports['./client'], base), 'utf8');

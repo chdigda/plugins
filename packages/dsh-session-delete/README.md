@@ -1,6 +1,6 @@
 # DSH Session Delete
 
-Linux / Node 24 / DSH 0.2.1-rc.5용. 현재 세션에서 삭제를 확인하고 **다음 DSH 재시작 시 자동으로 영구 삭제**합니다.
+Linux 및 Windows (ARM64 포함) / Node 24 이상 / DSH 0.2.1-rc.5용. 현재 세션에서 삭제를 확인하고 **다음 DSH 재시작 시 자동으로 영구 삭제**합니다.
 
 ## 사용
 
@@ -32,7 +32,8 @@ Linux / Node 24 / DSH 0.2.1-rc.5용. 현재 세션에서 삭제를 확인하고 
 - 세션·로그 저장소·KV 저장소가 활성화되기 전에 삭제 초기화가 끝나야 합니다. 서비스 순서를 검증하고 실패하면 임의 삭제하지 않습니다.
 - 같은 프로세스에서 예약한 요청은 삭제하지 않습니다. 모듈/설정 새로고침은 재시작으로 취급하지 않습니다.
 - 로컬 단일 DSH 호스트용입니다. 같은 DSH 홈의 다른 DSH 프로세스를 모두 종료하고 재시작하세요. 다른 호스트/컨테이너나 다른 프로필에서 동시에 공유 저장소를 사용하지 마세요.
-- 홈 런타임 잠금, 삭제 잠금, 세션별 native flock과 경로·소유권·세션 ID·파일 지문 검사 및 fsync 저널을 사용합니다.
+- Linux는 기존 native flock, UID 소유권 검사, 파일·디렉터리 fsync 저널을 유지합니다. Windows는 DSH와 같은 이름의 네이티브 세마포어로 런타임·삭제·세션 잠금을 잡습니다. 경로·세션 ID·파일 지문 검사는 공통입니다.
+- **Windows 개인용 모드**: POSIX UID 소유권 검사와 실행 중인 DSH 프로세스 검색, 디렉터리 fsync는 생략합니다. 파일 자체의 fsync는 유지하지만 정전·강제 종료 시 저널/삭제 내구성은 보장하지 않습니다. 다른 DSH 프로세스는 직접 모두 종료하세요. 세마포어는 같은 Windows 로그인 세션 범위이며 다른 로그인 세션이나 호스트까지 보호하지 않습니다.
 - 최신 세션 형식은 v4여야 합니다. 스케줄 저장소·사용자 지정 저장소·심볼릭 링크·알 수 없는 형식은 삭제를 보류합니다. 이유는 `/session-delete status`로 확인합니다.
 - 일부 삭제 후 오류가 나면 해당 상태로 DSH 서비스를 시작하지 않습니다. 로그를 확인하고 문제를 해결한 뒤 재시작하면 저널을 따라 복구합니다.
 
@@ -46,8 +47,8 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 
 0.3.0부터 **플러그인 상세 → Components → session-delete → 업데이트**에서 버전 확인·갱신합니다. 새 버전이 있을 때 확인 후 설치합니다. 갱신 후 DSH를 재시작해야 하며, 대기 중인 삭제 예약도 그 재시작 때 처리될 수 있습니다. 먼저 `/session-delete status`로 확인하세요. 제거 후 재설치가 실패하면 같은 주소로 다시 추가합니다. 자세한 설치·이전·개발 방법은 [저장소 안내](../../README.md)를 참고하세요.
 
-현재 Harness 프로필의 dependencies와 dsh.profile.bundles에 등록됩니다. 독립 플러그인이며 ComfyUI/DSH 코어 파일은 수정하지 않습니다. 기존 DSH 런타임의 native flock을 사용합니다. 버전 변경 시 재검증이 필요합니다.
+현재 Harness 프로필의 dependencies와 dsh.profile.bundles에 등록됩니다. 독립 플러그인이며 ComfyUI/DSH 코어 파일은 수정하지 않습니다. 기존 DSH 런타임에서 Linux flock 또는 Windows Koffi를 불러옵니다. 버전 변경 시 재검증이 필요합니다.
 
     node --test test.mjs
 
-테스트는 임시 홈만 사용합니다. native 잠금 테스트에는 DSH_TEST_FLOCK 환경변수로 기존 런타임의 flock 모듈 경로를 지정합니다.
+테스트는 임시 홈만 사용합니다. Linux native 잠금 테스트에는 DSH_TEST_FLOCK 환경변수로 기존 런타임의 flock 모듈 경로를 지정합니다. Windows native 잠금·부팅 통합 테스트는 DSH_RUNTIME_ENTRY를 설치된 DSH의 진입 파일 경로로 지정하면 실행됩니다. 별도 프로세스와의 충돌, 대소문자 경로, 종료 후 잠금 해제도 검사합니다. Windows DSH 샌드박스에서 테스트 실행기의 파이프 생성이 거부되면 Node 24 이상에서 `node --test --test-isolation=none test.mjs`를 사용합니다.

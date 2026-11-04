@@ -1,7 +1,7 @@
-import { readFile } from 'node:fs/promises';
+import { readFile, mkdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
-import { pathToFileURL } from 'node:url';
-import { assertId, safePath, purge, assertOffline, validateStructure } from './core.mjs';
+import { loadLock } from './platform/index.mjs';
+import { assertId, safePath, purge, assertOffline, validateStructure, lockFile } from './core.mjs';
 import { runtimeRequire } from './runtime.mjs';
 
 async function main() {
@@ -19,9 +19,14 @@ async function main() {
   if (plan.phase === 'complete') { console.log('이미 삭제 완료된 예약입니다.'); return; }
   if (plan.home !== home || plan.ticket !== ticket || plan.rootId !== id) throw new Error('예약과 확인 ID가 일치하지 않습니다.');
   validateStructure(plan);
-  const modulePath = runtimeRequire().resolve('@deepseek-ai/node-addon-system/flock');
-  const { tryLockExclusive } = await import(pathToFileURL(modulePath).href);
-  const ids = await purge(plan, path, tryLockExclusive);
+  const tryLockExclusive = await loadLock(runtimeRequire());
+  // A running plugin host owns this lock, including its workspace/search caches.
+  const runtimeDir = join(home, 'session-delete-requests');
+  await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
+  const hostLock = await lockFile(home, join(runtimeDir, 'runtime.lock'), tryLockExclusive);
+  let ids;
+  try { ids = await purge(plan, path, tryLockExclusive); }
+  finally { await hostLock.close(); }
   console.log('대화 로그와 해당 화면 캐시 삭제 완료 (' + ids.length + '개):\n' + ids.join('\n') + '\n이제 DSH를 시작하고 브라우저를 새로고침하세요.');
 }
 main().catch(error => { console.error('삭제하지 못했습니다: ' + error.message + '\n일부 삭제 이후 실패했다면 DSH를 재시작하지 말고 같은 명령을 다시 실행하세요.'); process.exitCode = 1; });
