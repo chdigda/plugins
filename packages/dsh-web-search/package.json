@@ -1,13 +1,13 @@
 {
   "name": "dsh-web-search",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Switchable Tavily and Brave search with secure API key settings for DSH",
   "main": "./index.mjs",
   "exports": {
     ".": "./index.mjs",
-    "./client": "./client.mjs",
+    "./client": "./client-bundle.mjs",
     "./package.json": "./package.json"
   },
   "engines": {
@@ -29,6 +29,22 @@
         "@deepseek-ai/dsh-client-ui-plugin-manager",
         "@deepseek-ai/dsh-api-remotes"
       ]
-    }
-  }
+    },
+    "manifestVersion": 1
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chdigda/plugins.git",
+    "directory": "packages/dsh-web-search"
+  },
+  "homepage": "https://github.com/chdigda/plugins/tree/main/packages/dsh-web-search",
+  "bugs": {
+    "url": "https://github.com/chdigda/plugins/issues"
+  },
+  "files": [
+    "index.mjs",
+    "provider.mjs",
+    "client-bundle.mjs",
+    "cordis.patch.yml"
+  ]
 }

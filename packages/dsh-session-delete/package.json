@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-delete",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "private": true,
   "type": "module",
   "description": "Confirmed permanent session deletion on the next DSH restart",
@@ -8,7 +8,8 @@
   "exports": {
     ".": "./index.mjs",
     "./boot": "./boot.mjs",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./client": "./client.mjs"
   },
   "engines": {
     "node": ">=24.0.0",
@@ -20,6 +21,34 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "manifestVersion": 1,
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
     }
-  }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chdigda/plugins.git",
+    "directory": "packages/dsh-session-delete"
+  },
+  "homepage": "https://github.com/chdigda/plugins/tree/main/packages/dsh-session-delete",
+  "bugs": {
+    "url": "https://github.com/chdigda/plugins/issues"
+  },
+  "files": [
+    "index.mjs",
+    "boot.mjs",
+    "runtime.mjs",
+    "core.mjs",
+    "requests.mjs",
+    "purge.mjs",
+    "client.mjs",
+    "cordis.patch.yml"
+  ]
 }

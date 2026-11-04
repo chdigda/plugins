@@ -280,7 +280,7 @@ test('native DSH service, credential, lifecycle and bundle integration', {
     const manifest = JSON.parse(await readFile(new URL('./package.json', import.meta.url), 'utf8'));
     assert.equal(manifest.name, 'dsh-web-search');
     assert.equal(manifest.exports['.'], './index.mjs');
-    assert.equal(manifest.exports['./client'], './client.mjs');
+    assert.equal(manifest.exports['./client'], './client-bundle.mjs');
     assert.equal(manifest.dsh.client.platform, 'web');
     const patch = await loadYaml(new URL(manifest.dsh.bundle.patch, new URL('./package.json', import.meta.url)));
     const original = structuredClone(shipped), warnings = [];

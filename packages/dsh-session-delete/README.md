@@ -38,7 +38,15 @@ Linux / Node 24 / DSH 0.2.1-rc.5용. 현재 세션에서 삭제를 확인하고 
 
 ## 설치
 
-web 프로필의 dependencies와 dsh.profile.bundles에 등록됩니다. 독립 플러그인이며 ComfyUI/DSH 코어 파일은 수정하지 않습니다. 기존 DSH 런타임의 native flock을 사용합니다. 버전 변경 시 재검증이 필요합니다.
+Harness의 **Plugins → + Add plugin**에 아래 주소 전체를 입력하고 설치·활성화한 뒤 **DSH를 재시작**합니다.
+
+```text
+git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
+```
+
+0.3.0부터 **플러그인 상세 → Components → session-delete → 업데이트**에서 버전 확인·갱신합니다. 새 버전이 있을 때 확인 후 설치합니다. 갱신 후 DSH를 재시작해야 하며, 대기 중인 삭제 예약도 그 재시작 때 처리될 수 있습니다. 먼저 `/session-delete status`로 확인하세요. 제거 후 재설치가 실패하면 같은 주소로 다시 추가합니다. 자세한 설치·이전·개발 방법은 [저장소 안내](../../README.md)를 참고하세요.
+
+현재 Harness 프로필의 dependencies와 dsh.profile.bundles에 등록됩니다. 독립 플러그인이며 ComfyUI/DSH 코어 파일은 수정하지 않습니다. 기존 DSH 런타임의 native flock을 사용합니다. 버전 변경 시 재검증이 필요합니다.
 
     node --test test.mjs
 

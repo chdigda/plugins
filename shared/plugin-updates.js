@@ -1,0 +1,216 @@
+/* Independent classic-script template. Concatenate inside a ModuleLoader factory.
+ * Public VM-test helpers are function declarations, intentionally not ESM exports.
+ * Supports pnpm Git subdirectory selectors; no extra deployment branches needed.
+ */
+function pluginUpdatesVersion(value) {
+  if (typeof value !== 'string') throw new Error('Invalid manifest version');
+  var m = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/.exec(value);
+  if (!m || (m[4] || '').split('.').some(function (p) { return /^0\d+$/.test(p); })) throw new Error('Invalid manifest version: ' + value);
+  return { core: m.slice(1, 4), pre: m[4] ? m[4].split('.') : [] };
+}
+function pluginUpdatesCompare(a, b) {
+  a = pluginUpdatesVersion(a); b = pluginUpdatesVersion(b);
+  function number(x, y) { return x.length === y.length ? (x === y ? 0 : x > y ? 1 : -1) : x.length > y.length ? 1 : -1; }
+  for (var i = 0; i < 3; i++) { var c = number(a.core[i], b.core[i]); if (c) return c; }
+  if (!a.pre.length || !b.pre.length) return a.pre.length === b.pre.length ? 0 : a.pre.length ? -1 : 1;
+  for (var j = 0; j < Math.max(a.pre.length, b.pre.length); j++) {
+    var x = a.pre[j], y = b.pre[j];
+    if (x === undefined || y === undefined) return x === undefined ? -1 : 1;
+    if (x === y) continue;
+    var nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+    return nx && ny ? number(x, y) : nx !== ny ? (nx ? -1 : 1) : x > y ? 1 : -1;
+  }
+  return 0;
+}
+function pluginUpdatesSource(source) {
+  if (typeof source !== 'string') throw new Error('No GitHub source (local installs cannot be updated here)');
+  var normalized = source.replace(/^github:/i, 'https://github.com/').replace(/^git\+/, '');
+  var url;
+  try { url = new URL(normalized); } catch (_) { throw new Error('Unsupported source; use a GitHub HTTPS installation address'); }
+  if (url.protocol !== 'https:' || url.hostname !== 'github.com' || url.port || url.username || url.password || url.search) throw new Error('Only HTTPS GitHub sources are supported');
+  var m = /^\/([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+?)(?:\.git)?\/?$/.exec(url.pathname);
+  if (!m || m[1] === '.' || m[1] === '..' || m[2] === '.' || m[2] === '..') throw new Error('Invalid GitHub repository root');
+  var ref = '', path = '', seenPath = false;
+  if (url.hash) url.hash.slice(1).split('&').forEach(function (part) {
+    try { part = decodeURIComponent(part); } catch (_) { throw new Error('Invalid Git selector encoding'); }
+    if (part.startsWith('path:')) {
+      if (seenPath) throw new Error('Duplicate Git subdirectory');
+      seenPath = true;
+      path = part.slice(5).replace(/^\//, '');
+      if (!path || path.split('/').some(function (p) { return !/^[A-Za-z0-9_@.-]+$/.test(p) || p === '.' || p === '..'; })) throw new Error('Unsafe Git subdirectory');
+    } else {
+      if (ref || !part) throw new Error('Duplicate or empty Git ref');
+      ref = part;
+    }
+  });
+  ref = ref || 'HEAD';
+  if (/^(?:[0-9a-f]{7,64}|v?\d+(?:\.\d+){0,2}(?:[-+].*)?|semver:.*|refs\/tags\/.*)$/i.test(ref)) throw new Error('Pinned commits, tags and semver selectors cannot be updated');
+  ref = ref.replace(/^refs\/heads\//, '');
+  if (!ref || /[\s~^:?*\[\]\\#%&]/.test(ref) || ref.includes('..') || ref.includes('@{') || ref.startsWith('/') || ref.endsWith('/') || ref.endsWith('.') || ref.split('/').some(function (p) { return !p || p[0] === '.' || p.endsWith('.lock'); })) throw new Error('Unsupported Git ref');
+  return { source: source, owner: m[1], repo: m[2], ref: ref, path: path,
+    manifestURL: 'https://raw.githubusercontent.com/' + m[1] + '/' + m[2] + '/' + encodeURIComponent(ref) + '/' + (path ? path.split('/').map(encodeURIComponent).join('/') + '/' : '') + 'package.json' };
+}
+function pluginUpdatesUnwrap(result) {
+  if (!result || result.ok !== true) {
+    var e = result && result.error;
+    throw new Error('Plugin manager: ' + (e && (e.message || e.code || e.kind) || 'remote request failed'));
+  }
+  return result.value;
+}
+function pluginUpdatesChange(result) {
+  var r = pluginUpdatesUnwrap(result);
+  if (!r || r.error || (r.packageResult && r.packageResult.exitCode !== 0) || !['applied', 'restart-required'].includes(r.application)) {
+    var error = new Error('Plugin manager: ' + (r && (r.error && (r.error.code + (r.error.diagnostic ? ': ' + r.error.diagnostic : '')) || r.packageResult && (r.packageResult.kind || r.packageResult.output) || r.application) || 'invalid result'));
+    error.code = r && r.error && r.error.code;
+    throw error;
+  }
+  return r;
+}
+function createPluginUpdatesController(options) {
+  var manager = options.manager, fetcher = options.fetch || globalThis.fetch;
+  var state = { phase: 'idle', latest: null, current: null, error: null, source: null };
+  var listeners = new Set(), generation = 0, detached = false, updating = false, abort;
+  function emit(patch) { state = Object.assign({}, state, patch); if (!detached) listeners.forEach(function (f) { f(); }); }
+  async function bundle() {
+    var all = pluginUpdatesUnwrap(await manager.listBundles());
+    if (!Array.isArray(all)) throw new Error('Invalid bundle list');
+    var matches = all.filter(function (b) { return b.name === options.pluginId; });
+    if (matches.length !== 1 || !matches[0].installed) throw new Error('Bundle is not uniquely installed');
+    return matches[0];
+  }
+  async function manifest(parsed, signal) {
+    var timer;
+    try {
+      return await Promise.race([
+        (async function () {
+          var fetchOptions = { signal: signal, cache: 'no-store', credentials: 'omit' };
+          // Bare Git selectors can name a tag as well as a branch. Verify a real
+          // heads ref, rather than silently treating an immutable tag as latest.
+          if (parsed.ref !== 'HEAD') {
+            var branch = await fetcher('https://api.github.com/repos/' + parsed.owner + '/' + parsed.repo + '/git/ref/heads/' + encodeURIComponent(parsed.ref), fetchOptions);
+            if (!branch.ok) throw new Error('GitHub branch unavailable (tags are not update sources): HTTP ' + branch.status);
+            var head = await branch.json();
+            if (!head || head.ref !== 'refs/heads/' + parsed.ref) throw new Error('GitHub source is not a branch');
+          }
+          var response = await fetcher(parsed.manifestURL, fetchOptions);
+          if (!response.ok) throw new Error('GitHub manifest HTTP ' + response.status);
+          var data = await response.json();
+          if (!data || data.name !== options.pluginId) throw new Error('GitHub manifest package name mismatch');
+          pluginUpdatesVersion(data.version);
+          return data.version;
+        })(),
+        new Promise(function (_, reject) { timer = setTimeout(function () { reject(new Error('GitHub manifest request timed out')); }, options.timeoutMs || 15000); })
+      ]);
+    } finally { clearTimeout(timer); }
+  }
+  async function check() {
+    if (detached || updating) return;
+    var token = ++generation;
+    if (abort) abort.abort();
+    abort = new AbortController();
+    var request = abort;
+    emit({ phase: 'checking', error: null, latest: null });
+    try {
+      var b = await bundle();
+      var parsed = pluginUpdatesSource(b.source);
+      pluginUpdatesVersion(b.version);
+      var version = await manifest(parsed, request.signal);
+      if (detached || token !== generation) return;
+      emit({ phase: pluginUpdatesCompare(version, b.version) > 0 ? 'available' : 'current', latest: version, current: b.version, source: b.source });
+    } catch (e) {
+      if (!detached && token === generation) emit({ phase: 'error', error: String(e.message || e) });
+    } finally { request.abort(); }
+  }
+  async function update() {
+    if (detached || updating || state.phase !== 'available') return;
+    updating = true;
+    var checked = state, removed = false;
+    emit({ phase: 'confirming', error: null });
+    try {
+      if (!await options.confirm(checked)) { emit({ phase: 'available' }); return; }
+      if (detached) return;
+      var b = await bundle();
+      if (detached) return;
+      if (b.source !== checked.source || b.version !== checked.current) throw new Error('Installed source/version changed; check again');
+      if (b.readOnlyReason || !b.removable) throw new Error('Bundle cannot be safely replaced: ' + (b.readOnlyReason || 'not-removable'));
+      if (typeof b.enabled !== 'boolean') throw new Error('Bundle enabled state is unknown; refusing to change activation');
+      pluginUpdatesSource(b.source);
+      emit({ phase: 'updating' });
+      // Capture the remote facade and source before self-removal detaches this plugin.
+      // Never cancel or gate the reinstall on component/plugin lifetime after removal.
+      var result, restart = false;
+      try { result = pluginUpdatesChange(await manager.installBundle(b.source, { enabled: b.enabled })); }
+      catch (e) {
+        if (e.code !== 'already-installed') throw e;
+        if (detached) return; // No destructive step has started yet.
+        var removal = pluginUpdatesChange(await manager.removeBundle(options.pluginId));
+        removed = true;
+        restart = removal.application === 'restart-required';
+        result = pluginUpdatesChange(await manager.installBundle(b.source, { enabled: b.enabled }));
+      }
+      if (result.bundle && result.bundle !== options.pluginId) throw new Error('Installed bundle name mismatch');
+      var installedVersion = result.version;
+      if (!installedVersion) {
+        var installed = await bundle();
+        if (installed.source !== b.source || installed.enabled !== b.enabled) throw new Error('Installed source/activation state does not match the requested update');
+        installedVersion = installed.version;
+      }
+      pluginUpdatesVersion(installedVersion);
+      if (pluginUpdatesCompare(installedVersion, checked.latest) < 0) throw new Error('Installed version is older than the checked GitHub manifest; check again');
+      emit({ phase: options.restartRequired || restart || result.application === 'restart-required' ? 'restart' : 'updated', current: installedVersion });
+    } catch (e) {
+      emit({ phase: 'error', error: String(e.message || e) + (removed ? ' — Reinstall manually from: ' + checked.source : '') });
+    } finally { updating = false; }
+  }
+  return {
+    getSnapshot: function () { return state; },
+    subscribe: function (f) { listeners.add(f); return function () { listeners.delete(f); }; },
+    check: check, update: update,
+    dispose: function () { detached = true; generation++; if (abort) abort.abort(); listeners.clear(); }
+  };
+}
+function createPluginUpdates(config) {
+  var React = require('react');
+  var namespace = 'pluginUpdates.' + config.pluginId + '.' + config.entryId;
+  var en = {
+    sessionWarning: 'Session Delete needs a DSH restart. Pending deletion requests may execute then; review /session-delete status first.',
+    check: 'Check latest GitHub version', again: 'Check again', update: 'Update',
+    idle: 'Check the installed GitHub source for updates.', checking: 'Checking…',
+    available: 'Update available', current: 'Up to date', confirming: 'Awaiting confirmation…',
+    updating: 'Updating…', updated: 'Updated. Refresh this page.', restart: 'Updated. Restart DSH, then refresh this page.', error: 'Update failed',
+    confirm: 'Update by reinstalling this exact GitHub source? If already installed, the bundle will first be removed. Saved configuration is retained by the manager, but reinstall can fail and leave the plugin removed. You may need to reinstall manually. Do not close the page until finished. Source:'
+  };
+  var ko = {
+    sessionWarning: '세션 삭제는 DSH 재시작이 필요합니다. 예약된 삭제가 그때 처리될 수 있으므로 먼저 /session-delete status로 확인하세요.',
+    check: 'GitHub 최신 버전 확인', again: '다시 확인', update: '업데이트',
+    idle: '설치된 GitHub 소스의 최신 버전을 확인합니다.', checking: '확인 중…',
+    available: '업데이트 가능', current: '최신 버전입니다', confirming: '확인 대기 중…',
+    updating: '업데이트 중…', updated: '업데이트 완료. 페이지를 새로고침하세요.', restart: '업데이트 완료. DSH를 재시작한 뒤 새로고침하세요.', error: '업데이트 실패',
+    confirm: '동일한 GitHub 소스를 다시 설치할까요? 이미 설치되어 있으면 먼저 번들을 제거합니다. 관리자가 저장된 설정을 유지하지만 재설치 실패 시 플러그인이 제거된 채 남을 수 있습니다. 수동 재설치가 필요할 수 있습니다. 완료될 때까지 페이지를 닫지 마세요. 소스:'
+  };
+  return { inject: ['slots', 'locale'], apply: function (ctx) {
+    var t = ctx.locale.bind(namespace);
+    ctx.effect(function () { return ctx.locale.register(namespace, { en: en, ko: ko }); });
+    ctx.inject(['remote', 'remote.pluginManager'], function (live) {
+      var controller = createPluginUpdatesController({ pluginId: config.pluginId, restartRequired: config.pluginId === 'dsh-session-delete', manager: live.remote.pluginManager,
+        confirm: function (s) { return globalThis.confirm(t('confirm') + '\n' + s.source + (config.pluginId === 'dsh-session-delete' ? '\n' + t('sessionWarning') : '')); } });
+      live.effect(function () { return function () { controller.dispose(); }; });
+      function Card(props) {
+        var s = React.useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+        if (props && props.view === 'summary') return React.createElement('span', null, t('update'));
+        var busy = ['checking', 'confirming', 'updating'].includes(s.phase);
+        var buttonStyle = { border: '1px solid var(--dsw-alias-border-l3)', borderRadius: 'var(--dsw-radius-md)', background: 'transparent', color: 'inherit', padding: '6px 10px', font: 'inherit', cursor: busy ? 'default' : 'pointer' };
+        return React.createElement('div', { style: { display: 'grid', gap: 8, fontSize: 13 } },
+          React.createElement('strong', null, config.title + ' · ' + t('update')),
+          React.createElement('div', { role: s.phase === 'error' ? 'alert' : 'status', 'aria-live': 'polite' },
+            t(s.phase), s.current ? ' (' + s.current + (s.latest ? ' → ' + s.latest : '') + ')' : '', s.error ? ': ' + s.error : ''),
+          React.createElement('div', { style: { display: 'flex', gap: 8 } },
+            React.createElement('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: function () { void controller.check(); } }, t(s.phase === 'idle' ? 'check' : 'again')),
+            s.phase === 'available' ? React.createElement('button', { type: 'button', style: buttonStyle, disabled: busy, onClick: function () { void controller.update(); } }, t('update')) : null));
+      }
+      live.effect(function () { return live.slots.inject('plugins.row.config', function () {
+        return live.slots.register({ name: 'plugins.row.config', key: config.pluginId + '#' + config.entryId, locale: namespace }, Card);
+      }); });
+    });
+  } };
+}
