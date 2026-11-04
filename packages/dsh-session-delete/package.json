@@ -1,0 +1,25 @@
+{
+  "name": "dsh-session-delete",
+  "version": "0.2.0",
+  "private": true,
+  "type": "module",
+  "description": "Confirmed permanent session deletion on the next DSH restart",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./boot": "./boot.mjs",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=24.0.0",
+    "dsh": "0.2.1-rc.5"
+  },
+  "scripts": {
+    "test": "node --test test.mjs"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  }
+}

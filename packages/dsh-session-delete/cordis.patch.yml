@@ -1,0 +1,11 @@
+- id: session
+  inject: [sessionDeleteReady]
+- id: session-persistence-jsonl
+  inject: [sessionDeleteReady]
+- id: storage
+  inject: [sessionDeleteReady]
+- insert:
+    - id: session-delete-boot
+      name: dsh-session-delete/boot
+    - id: session-delete
+      name: dsh-session-delete

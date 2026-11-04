@@ -1,0 +1,15 @@
+- id: web
+  config:
+    searchProvider: tavily-brave
+    fetchProvider: http
+
+- id: web-search-deepseek
+  disabled: true
+- id: web-deepseek-api
+  disabled: true
+- id: ui-settings-web-search
+  disabled: true
+
+- insert:
+    - id: web-search
+      name: dsh-web-search

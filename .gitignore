@@ -1,0 +1,9 @@
+node_modules/
+verify-real-session.mjs
+.env
+.env.*
+*.log
+.npmrc
+.netrc
+*.pem
+id_rsa*
