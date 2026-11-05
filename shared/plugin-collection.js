@@ -1,7 +1,8 @@
-function pluginCollectionSpec(repository, dir) {
+function pluginCollectionSpec(repository, dir, ref) {
   var base = String(repository || '').trim().replace(/\/+$/, '').replace(/\.git$/, '');
   var path = String(dir || '').replace(/^\/+/, '').replace(/\/+$/, '');
-  return 'git+' + base + '.git' + (path ? '#path:/' + path : '');
+  var fragment = [ref && ref !== 'HEAD' ? ref : '', path ? 'path:/' + path : ''].filter(Boolean).join('&');
+  return 'git+' + base + '.git' + (fragment ? '#' + fragment : '');
 }
 function pluginCollectionParsed(source) {
   try { return pluginUpdatesSource(source); } catch (_) { return null; }
@@ -28,6 +29,11 @@ function pluginCollectionManifestURL(repo, dir) {
   var path = String(dir || '').replace(/^\/+/, '').replace(/\/+$/, '');
   return 'https://raw.githubusercontent.com/' + repo.owner + '/' + repo.repo + '/' + encodeURIComponent(repo.ref) + '/' +
     (path ? path.split('/').map(encodeURIComponent).join('/') + '/' : '') + 'package.json';
+}
+function pluginCollectionRowStatus(row, spec) {
+  if (!row.installed) return 'missing';
+  if (!pluginCollectionSameSource(row.source, spec)) return 'foreign';
+  return pluginCollectionStatus(row.version, row.latest);
 }
 function pluginCollectionStatus(installedVersion, latest) {
   if (!installedVersion || !latest) return 'unknown';
@@ -90,6 +96,14 @@ function createPluginCollectionController(options) {
     if (matches.length > 1) throw new Error('Bundle is listed more than once: ' + name);
     return matches.length === 1 ? matches[0] : null;
   }
+  function repoOf(list) {
+    var hub = bundleOf(list, options.packageName);
+    return pluginCollectionRepo(hub && hub.source, options.repository, options.branch);
+  }
+  function specFor(plugin) {
+    var repo = state.repo;
+    return repo ? pluginCollectionSpec('https://github.com/' + repo.owner + '/' + repo.repo, plugin.dir, repo.ref) : plugin.spec;
+  }
   function describe(list, plugin, previous) {
     var bundle = bundleOf(list, plugin.name);
     var installed = !!(bundle && bundle.installed);
@@ -100,7 +114,7 @@ function createPluginCollectionController(options) {
       name: plugin.name, installed: installed, enabled: installed && bundle.enabled === true,
       version: version, latest: latest, source: source, busy: false, error: null
     };
-    row.status = !installed ? 'missing' : !pluginCollectionParsed(source) ? 'foreign' : latest ? pluginCollectionStatus(version, latest) : 'unknown';
+    row.status = pluginCollectionRowStatus(row, specFor(plugin));
     return row;
   }
   function hubVersionOf(list) {
@@ -109,8 +123,15 @@ function createPluginCollectionController(options) {
   }
   async function refresh() {
     if (detached || applying) return;
-    var list = await bundleRecords();
-    emit({ rows: state.rows.map(function (row) { return describe(list, byName[row.name], row); }), hubVersion: hubVersionOf(list), error: null });
+    var token = ++generation;
+    try {
+      var list = await bundleRecords();
+      if (detached || token !== generation) return;
+      emit({ repo: repoOf(list) });
+      emit({ rows: state.rows.map(function (row) { return describe(list, byName[row.name], row); }), hubVersion: hubVersionOf(list), error: null });
+    } catch (error) {
+      if (!detached && token === generation) emit({ phase: 'error', error: String(error.message || error) });
+    }
   }
   async function check() {
     if (detached || applying) return;
@@ -118,10 +139,12 @@ function createPluginCollectionController(options) {
     if (abort) abort.abort();
     abort = new AbortController();
     var request = abort;
-    emit({ phase: 'checking', error: null, restart: false });
+    emit({ phase: 'checking', error: null });
     try {
       var list = await bundleRecords();
-      var repo = pluginCollectionRepo(bundleOf(list, options.packageName) && bundleOf(list, options.packageName).source, options.repository, options.branch);
+      if (detached || token !== generation) return;
+      var repo = repoOf(list);
+      emit({ repo: repo });
       var rows = state.rows.map(function (row) { return describe(list, byName[row.name], row); });
       emit({ rows: rows, repo: repo, hubVersion: hubVersionOf(list) });
       var results = await Promise.all(rows.map(function (row) {
@@ -135,9 +158,8 @@ function createPluginCollectionController(options) {
       results.forEach(function (result) { if (result.error) failures[result.name] = result.error; else versions[result.name] = result.version; });
       emit({ phase: 'checked', rows: state.rows.map(function (row) {
         var latest = versions[row.name] !== undefined ? versions[row.name] : row.latest;
-        var patch = { latest: latest };
-        if (failures[row.name]) { patch.error = failures[row.name]; patch.status = row.installed ? 'unknown' : 'missing'; }
-        else patch.status = row.installed ? pluginCollectionStatus(row.version, latest) : 'missing';
+        var patch = { latest: failures[row.name] ? null : latest, error: failures[row.name] || null };
+        patch.status = pluginCollectionRowStatus(Object.assign({}, row, patch), specFor(byName[row.name]));
         return Object.assign({}, row, patch);
       }) });
     } catch (error) {
@@ -146,10 +168,11 @@ function createPluginCollectionController(options) {
   }
   async function applyRow(name, skipConfirm) {
     var row = rowOf(name), plugin = byName[name];
-    if (!row || !plugin || detached || applying) return;
+    if (!row || !plugin || detached) return;
     if (row.status !== 'missing' && row.status !== 'available') return;
     if (!skipConfirm && options.confirm && !options.confirm(row.status === 'missing' ? 'confirmInstall' : 'confirmUpdate', plugin)) return;
-    applying = true;
+    generation++;
+    if (abort) abort.abort();
     var restart = state.restart;
     patchRow(name, { busy: true, error: null });
     emit({ phase: 'applying', error: null });
@@ -157,10 +180,10 @@ function createPluginCollectionController(options) {
       var list = await bundleRecords();
       var bundle = bundleOf(list, name);
       var installed = !!(bundle && bundle.installed);
-      var spec = installed && typeof bundle.source === 'string' ? bundle.source : plugin.spec;
+      var target = specFor(plugin);
+      var spec = installed && pluginCollectionSameSource(bundle.source, target) ? bundle.source : target;
       var enabled = installed ? bundle.enabled : true;
       if (installed && typeof bundle.enabled !== 'boolean') throw new Error('Plugin activation state is unknown; refusing to change it');
-      pluginCollectionParsed(spec);
       var raw = await manager.installBundle(spec, { enabled: enabled });
       if (pluginCollectionAlreadyInstalled(raw)) {
         pluginUpdatesChange(await manager.removeBundle(name));
@@ -176,34 +199,37 @@ function createPluginCollectionController(options) {
       var version = typeof afterBundle.version === 'string' ? afterBundle.version : null;
       if (!version) throw new Error('Installed version is unknown; check again');
       if (row.latest && pluginUpdatesCompare(version, row.latest) < 0) throw new Error('Installed version is older than the checked GitHub version; check again');
-      var repo = state.repo || pluginCollectionRepo(afterBundle.source, options.repository, options.branch);
       emit({ rows: state.rows.map(function (item) {
-        if (item.name !== name) return item;
-        return Object.assign({}, item, { installed: true, enabled: enabled, version: version, source: afterBundle.source || item.source,
-          status: row.latest ? pluginCollectionStatus(version, row.latest) : 'unknown', busy: false, error: null });
-      }), repo: repo, hubVersion: hubVersionOf(after), phase: 'checked', restart: restart });
+        return item.name === name ? describe(after, plugin, item) : item;
+      }), hubVersion: hubVersionOf(after), phase: 'checked', restart: restart });
     } catch (error) {
       var message = String((error && error.message) || error);
       patchRow(name, { busy: false, error: message });
       emit({ phase: 'error', error: message, restart: restart });
-    } finally { applying = false; }
+    }
+  }
+  async function applyOne(name) {
+    if (detached || applying) return;
+    applying = true;
+    try { await applyRow(name, false); } finally { applying = false; }
   }
   async function applyAll() {
     if (detached || applying) return;
     var actionable = state.rows.filter(function (row) { return row.status === 'missing' || row.status === 'available'; });
     if (!actionable.length) return;
     if (options.confirm && !options.confirm('confirmAll', actionable.map(function (row) { return byName[row.name]; }))) return;
-    for (var index = 0; index < actionable.length; index++) {
-      if (detached) return;
-      var row = rowOf(actionable[index].name);
-      if (!row || (row.status !== 'missing' && row.status !== 'available')) continue;
-      await applyRow(row.name, true);
-    }
+    applying = true;
+    try {
+      for (var index = 0; index < actionable.length; index++) {
+        if (detached) return;
+        await applyRow(actionable[index].name, true);
+      }
+    } finally { applying = false; }
   }
   return {
     getSnapshot: function () { return state; },
     subscribe: function (listener) { listeners.add(listener); return function () { listeners.delete(listener); }; },
-    refresh: refresh, check: check, applyOne: function (name) { return applyRow(name, false); }, applyAll: applyAll,
+    refresh: refresh, check: check, applyOne: applyOne, applyAll: applyAll,
     dispose: function () { detached = true; generation++; if (abort) abort.abort(); listeners.clear(); }
   };
 }
