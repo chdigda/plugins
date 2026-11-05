@@ -14,3 +14,7 @@ jobs:
         with:
           node-version: 24
       - run: npm run check
+      - run: node --check client-bundle.mjs
+      - run: node --check packages/dsh-web-search/client-bundle.mjs
+      - run: node --check packages/dsh-session-delete/client.mjs
+      - run: npm test

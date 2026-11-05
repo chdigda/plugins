@@ -1,0 +1,5 @@
+# The collection manager row. Its browser half renders the dashboard on this
+# bundle's page: install, update check and update for each collection plugin.
+- insert:
+    - id: dsh-plugins
+      name: dsh-plugins
