@@ -68,7 +68,7 @@ function createPluginCollectionController(options) {
   var state = {
     phase: 'idle', repo: null, hubVersion: null, error: null, restart: false,
     rows: plugins.map(function (plugin) {
-      return { name: plugin.name, installed: false, enabled: false, version: null, latest: null, status: 'missing', source: null, busy: false, error: null };
+      return { name: plugin.name, installed: false, enabled: false, version: null, latest: null, status: 'unknown', source: null, busy: false, error: null };
     })
   };
   var listeners = new Set(), detached = false, generation = 0, abort = null, applying = false;
@@ -270,6 +270,7 @@ function createPluginCollection(config) {
       }
       function Card(props) {
         var snapshot = React.useSyncExternalStore(controller.subscribe, controller.getSnapshot, controller.getSnapshot);
+        React.useEffect(function () { void controller.refresh(); }, []);
         if (props && props.view === 'summary') return h('span', null, t('title'));
         var busy = snapshot.phase === 'checking' || snapshot.phase === 'applying';
         var actionable = snapshot.rows.filter(function (row) { return row.status === 'missing' || row.status === 'available'; }).length;
