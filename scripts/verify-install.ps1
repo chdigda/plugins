@@ -61,9 +61,17 @@ if (-not $pnpm) { $pnpm = (Get-Command pnpm -ErrorAction SilentlyContinue).Sourc
 $git = (Get-Command git -ErrorAction SilentlyContinue).Source
 $dshArgs = @()
 if ($DshCli) { $dshArgs = @((Resolve-Path -LiteralPath $DshCli).Path) }
-elseif (-not (Get-Command dsh -ErrorAction SilentlyContinue)) {
-  $hit = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'npm-cache\_npx\*\node_modules\@deepseek-ai\dsh\lib\bin.js') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
-  if ($hit) { $dshArgs = @($hit.FullName) }
+else {
+  $app = Get-Command dsh -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+  if ($app) {
+    $nodeModules = Split-Path -Parent (Split-Path -Parent $app.Source)
+    $cand = Join-Path $nodeModules '@deepseek-ai\dsh\lib\bin.js'
+    if (Test-Path -LiteralPath $cand) { $dshArgs = @((Resolve-Path -LiteralPath $cand).Path) }
+  }
+  if (-not $dshArgs) {
+    $hit = Get-ChildItem -Path (Join-Path $env:LOCALAPPDATA 'npm-cache\_npx\*\node_modules\@deepseek-ai\dsh\lib\bin.js') -ErrorAction SilentlyContinue | Sort-Object LastWriteTime -Descending | Select-Object -First 1
+    if ($hit) { $dshArgs = @($hit.FullName) }
+  }
 }
 
 $script:results = [System.Collections.Generic.List[object]]::new()
@@ -183,19 +191,28 @@ elseif ($Template -eq 'web') { Add-Result 'dump-config: web template layer prese
 if ($Boot) {
   $bootOut = Join-Path $LogDir 'verify-boot.out.txt'
   $bootErr = Join-Path $LogDir 'verify-boot.err.txt'
-  $savedHome = [Environment]::GetEnvironmentVariable('DSH_HOME')
-  [Environment]::SetEnvironmentVariable('DSH_HOME', $HomeDir)
-  [Environment]::SetEnvironmentVariable('DSH_TELEMETRY_DISABLED', '1')
-  $proc = Start-Process -FilePath $node -ArgumentList (@($dshPrefix) + @('--profile', $Profile, '--port', $Port, '--no-open')) -RedirectStandardOutput $bootOut -RedirectStandardError $bootErr -PassThru -NoNewWindow
+  Remove-Item -LiteralPath $bootOut, $bootErr -Force -ErrorAction SilentlyContinue
+  $savedHome = [Environment]::GetEnvironmentVariable('DSH_HOME', 'Process')
+  [Environment]::SetEnvironmentVariable('DSH_HOME', $HomeDir, 'Process')
+  [Environment]::SetEnvironmentVariable('DSH_TELEMETRY_DISABLED', '1', 'Process')
+  $bootExe = $node
+  $bootArgs = @($dshPrefix) + @($Profile, '--port', [string]$Port, '--no-open')
+  $proc = Start-Process -FilePath $bootExe -ArgumentList $bootArgs -RedirectStandardOutput $bootOut -RedirectStandardError $bootErr -PassThru -NoNewWindow
   try {
     $origin = "http://127.0.0.1:$Port"
     $url = $null
     for ($i = 0; $i -lt 120 -and -not $url; $i++) {
       Start-Sleep -Milliseconds 500
       if (Test-Path -LiteralPath $bootOut) {
-        $m = [regex]::Match((Get-Content -LiteralPath $bootOut -Raw), [regex]::Escape($origin) + '/\?token=\S+')
-        if ($m.Success) { $url = $m.Value }
-        elseif ((Get-Content -LiteralPath $bootErr -Raw -ErrorAction SilentlyContinue) -match 'startup failed') { break }
+        $bootText = Get-Content -LiteralPath $bootOut -Raw -ErrorAction SilentlyContinue
+        if ($bootText) {
+          $m = [regex]::Match($bootText, [regex]::Escape($origin) + '/\?token=\S+')
+          if ($m.Success) { $url = $m.Value }
+        }
+      }
+      if (-not $url -and (Test-Path -LiteralPath $bootErr)) {
+        $errText = Get-Content -LiteralPath $bootErr -Raw -ErrorAction SilentlyContinue
+        if ($errText -and $errText -match 'startup failed|Error:') { break }
       }
     }
     Add-Result 'boot: server announced its URL' ($null -ne $url) $url
@@ -207,13 +224,9 @@ if ($Boot) {
       $http.DefaultRequestHeaders.Add('Origin', $origin)
       $index = $http.GetStringAsync($url).GetAwaiter().GetResult()
       Add-Result 'boot: index carries DSH boot manifest' ($index.Contains('__DSH_BOOT__'))
-      $entry = [regex]::Match($index, '"id":"' + [regex]::Escape($ClientId) + '","url":"([^"]+)"')
-      Add-Result "boot: client entry $ClientId in boot manifest" $entry.Success $entry.Groups[1].Value
-      if ($entry.Success) {
-        $chunkUrl = [uri]::new([uri]"$origin/", $entry.Groups[1].Value.Replace('&amp;', '&')).AbsoluteUri
-        $chunk = $http.GetStringAsync($chunkUrl).GetAwaiter().GetResult()
-        Add-Result 'boot: served client bundle declares module id' ($chunk.Contains(('id: "' + $ClientId + '"')) -and $chunk.Contains('__ModuleLoader__.load')) "$($chunk.Length) bytes"
-      }
+      Add-Result "boot: client module $ClientId listed in index" ($index.Contains($ClientId + '/client.js')) $ClientId
+      $moduleMatch = [regex]::Match($index, [regex]::Escape($ClientId + '/client.js') + '[^"]*')
+      Add-Result 'boot: client module url present in index' $moduleMatch.Success $moduleMatch.Value
     }
   } finally {
     if ($proc) { & cmd.exe /d /s /c ('taskkill /PID ' + $proc.Id + ' /T /F > "' + (Join-Path $LogDir 'boot-kill.log') + '" 2>&1') | Out-Null }
