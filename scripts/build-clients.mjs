@@ -2,6 +2,8 @@ import { readFile, writeFile } from 'node:fs/promises';
 const root = new URL('../', import.meta.url);
 const read = async path => (await readFile(new URL(path, root), 'utf8')).replace(/\r\n/g, '\n');
 const shared = await read('shared/plugin-updates.js');
+const collection = await read('shared/plugin-collection.js');
+const manifest = JSON.parse(await read('collection.json'));
 const checking = process.argv.includes('--check');
 async function output(path, content) {
   if (checking) {
@@ -22,6 +24,25 @@ await output('packages/dsh-session-delete/client.mjs', [
   '  id: "dsh-session-delete",',
   '  factory(require) {', shared,
   '    return createPluginUpdates({ pluginId: "dsh-session-delete", entryId: "session-delete", title: "Session Delete" });',
+  '  },', '});', '',
+].join(nl));
+const config = {
+  packageName: 'dsh-plugins',
+  repository: manifest.repository,
+  branch: manifest.branch,
+  plugins: manifest.plugins.map(plugin => ({
+    name: plugin.name,
+    dir: plugin.dir,
+    title: plugin.title,
+    description: plugin.description,
+    restart: plugin.restart === true,
+  })),
+};
+await output('client-bundle.mjs', [
+  'window.__ModuleLoader__.load({',
+  '  id: "dsh-plugins",',
+  '  factory(require) {', shared, collection,
+  '    return createPluginCollection(' + JSON.stringify(config) + ');',
   '  },', '});', '',
 ].join(nl));
 console.log(checking ? 'Client artifacts are current.' : 'Built independent plugin clients.');

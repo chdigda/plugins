@@ -7,3 +7,5 @@ verify-real-session.mjs
 .netrc
 *.pem
 id_rsa*
+.verify/
+research/

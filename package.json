@@ -1,10 +1,55 @@
 {
   "name": "dsh-plugins",
+  "version": "0.1.0",
   "private": true,
   "license": "MIT",
+  "type": "module",
+  "description": "DSH plugin collection: one GitHub link installs the manager that installs, checks and updates each plugin in this repository",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client-bundle.mjs",
+    "./collection.json": "./collection.json",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=24.0.0",
+    "dsh": ">=0.2.1-rc.5 <0.3.0"
+  },
+  "dsh": {
+    "manifestVersion": 1,
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-plugin-manager",
+        "@deepseek-ai/dsh-api-remotes"
+      ]
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chdigda/plugins.git"
+  },
+  "homepage": "https://github.com/chdigda/plugins",
+  "bugs": {
+    "url": "https://github.com/chdigda/plugins/issues"
+  },
+  "files": [
+    "index.mjs",
+    "client-bundle.mjs",
+    "cordis.patch.yml",
+    "collection.json",
+    "LICENSE",
+    "README.md"
+  ],
   "scripts": {
     "build": "node scripts/build-clients.mjs",
-    "check": "node scripts/build-clients.mjs --check"
+    "check": "node scripts/build-clients.mjs --check",
+    "test": "node scripts/test.mjs"
   },
   "workspaces": [
     "packages/*"
