@@ -6,6 +6,7 @@ DeepSeek Harness용 독립 플러그인 모음입니다. 저장소와 개발 브
 | --- | --- |
 | [dsh-session-delete](packages/dsh-session-delete/README.md) | 확인 후 다음 DSH 재시작 때 세션 영구 삭제 (Linux·Windows / Node 24+) |
 | [dsh-web-search](packages/dsh-web-search/README.md) | Tavily 검색, Brave 대체 검색, API 키 설정 화면 |
+| [dsh-session-tweak](packages/dsh-session-tweak/README.md) | 모델 컨텍스트에서 사용자 메시지 수정·메시지 제거 |
 
 ## Harness에서 설치
 
@@ -24,9 +25,15 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-web-search
 git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 ```
 
+**세션 트윅**
+
+```text
+git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-tweak
+```
+
 3. Harness가 재시작을 요구하면 다시 시작하고 브라우저를 새로고침합니다. 세션 삭제는 부팅 순서가 필요하므로 설치 후 반드시 재시작합니다.
 
-주소의 `#path:` 부분을 빼면 플러그인이 아닌 저장소 루트를 설치하게 됩니다. GitHub의 `/tree/main/...` 페이지 주소가 아닌 위 주소를 사용하세요. 설치 주소는 pnpm이 지원하는 Git 하위 디렉터리 형식이며, pnpm 12.15.0에서 두 패키지를 독립 설치하는 것을 검증했습니다. 다른 Harness 배포본의 pnpm 버전에서는 하위 경로 지원 여부를 확인해야 합니다. 설치 오류가 나면 진단 로그와 pnpm 버전을 확인하세요.
+주소의 `#path:` 부분을 빼면 플러그인이 아닌 저장소 루트를 설치하게 됩니다. GitHub의 `/tree/main/...` 페이지 주소가 아닌 위 주소를 사용하세요. 설치 주소는 pnpm이 지원하는 Git 하위 디렉터리 형식이며, pnpm 12.15.0에서 세 패키지의 하위 디렉터리 설치를 검증했습니다. 다른 Harness 배포본의 pnpm 버전에서는 하위 경로 지원 여부를 확인해야 합니다. 설치 오류가 나면 진단 로그와 pnpm 버전을 확인하세요.
 
 기존 로컬 설치는 자동으로 Git 설치로 바꾸지 않습니다. 로컬 번들로 설치했다면 해당 패키지를 제거한 후 위 주소로 다시 추가하세요. 동일한 패키지를 중복 등록하지 마세요. API 키, 삭제 예약, 프로필 설정은 저장소에 포함하지 않습니다.
 
@@ -39,21 +46,10 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 - Harness가 이미 설치된 패키지의 덮어쓰기를 거부하면 제거 후 재설치합니다. 프로필 설정·보안 자격 증명은 따로 보관되지만, 재설치 실패 시 플러그인이 제거된 상태로 남을 수 있습니다. 화면의 설치 주소를 복사해 **+ Add plugin**에서 다시 추가하세요.
 - 재시작 안내가 나오면 Harness를 다시 시작합니다. 세션 삭제 플러그인은 갱신 후 재시작이 필요하며, 대기 중인 삭제 예약이 있으면 그 재시작 때 처리될 수 있습니다. 미리 `/session-delete status`로 확인하고 필요하면 취소하세요.
 - 로컬 설치·커밋 고정·태그 고정 설치는 이 화면에서 갱신하지 않습니다. 자동 설치는 하지 않습니다.
+- 세션 트윅에는 아직 업데이트 화면이 없습니다. 새 버전을 설치하려면 플러그인을 제거한 뒤 **+ Add plugin**에서 같은 주소로 다시 추가합니다.
 - 네트워크 오류·GitHub 요청 제한은 확인 실패로 표시하며 최신 버전이라고 표시하지 않습니다.
 
 현재 0.2.0에는 확인 화면이 없으므로 처음 한 번은 제거 후 같은 Git 주소로 다시 추가해야 합니다. **목록 새로고침**은 설치 목록을 다시 읽는 기능이지 GitHub 업데이트 확인이 아닙니다.
-
-## 개발·배포
-
-개발은 `main`의 `packages/<이름>`에서 합니다. 설치용 브랜치나 브랜치 간 머지는 필요하지 않습니다. 다른 플러그인을 수정하지 않고 각 폴더를 따로 작업할 수 있습니다.
-
-1. 변경한 패키지의 `package.json` 버전을 올립니다. 커밋만 바꾸고 버전을 그대로 두면 업데이트 알림은 나오지 않습니다.
-2. `npm run build`로 독립 클라이언트 파일을 생성합니다.
-3. `npm run check`로 생성물의 최신 여부를 확인하고, 변경 기능은 대상 환경에서 직접 검증한 뒤 생성물까지 함께 커밋·푸시합니다. 설치할 때 별도 빌드나 빌드 스크립트 실행이 필요하지 않습니다.
-
-업데이트 로직 원본은 `shared/plugin-updates.js`이고, `scripts/build-clients.mjs`가 각 패키지 안에 이를 포함합니다. 설치된 패키지는 저장소의 다른 폴더에 의존하지 않습니다. CI는 생성물의 최신 여부만 검사하며 기능·호환성을 보증하지 않습니다.
-
-개발용 로컬 설치는 여전히 `packages/<이름>`을 로컬 번들로 추가할 수 있습니다. 패키지 전체 활성화 스위치로 각각 켜고 끄세요.
 
 ### 참고
 

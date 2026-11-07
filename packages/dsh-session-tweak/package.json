@@ -1,0 +1,45 @@
+{
+  "name": "dsh-session-tweak",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "description": "Edit or remove messages from a live DSH session's model context",
+  "main": "./index.mjs",
+  "exports": {
+    ".": "./index.mjs",
+    "./client": "./client.mjs",
+    "./package.json": "./package.json"
+  },
+  "engines": {
+    "node": ">=22",
+    "dsh": ">=0.2.2-rc.1 <0.3.0"
+  },
+  "dsh": {
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-primitives"
+      ]
+    },
+    "manifestVersion": 1
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chdigda/plugins.git",
+    "directory": "packages/dsh-session-tweak"
+  },
+  "homepage": "https://github.com/chdigda/plugins/tree/main/packages/dsh-session-tweak",
+  "bugs": {
+    "url": "https://github.com/chdigda/plugins/issues"
+  },
+  "files": [
+    "index.mjs",
+    "core.mjs",
+    "client.mjs",
+    "LICENSE",
+    "README.md"
+  ]
+}
