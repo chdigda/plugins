@@ -1,6 +1,6 @@
 {
   "name": "dsh-session-tweak",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "license": "MIT",
   "type": "module",
@@ -16,6 +16,9 @@
     "dsh": ">=0.2.2-rc.1 <0.3.0"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
@@ -39,6 +42,7 @@
     "index.mjs",
     "core.mjs",
     "client.mjs",
+    "cordis.patch.yml",
     "LICENSE",
     "README.md"
   ]
