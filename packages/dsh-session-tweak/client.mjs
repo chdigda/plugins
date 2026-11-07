@@ -13,9 +13,10 @@ window.__ModuleLoader__.load({
       unavailable: "This message cannot be changed.",
       "error.stale": "This message changed. Cancel and try again.",
       "error.compacted": "This message is already covered by a context summary and cannot be edited here.",
+      "error.binding-unavailable": "This session cannot be updated in place. Reopen it and try again.",
       "error.session-busy": "This session is running. Wait until it finishes to edit or delete.",
-      "error.target-not-found": "Message not found. Refresh the page.",
-      "error.session-not-found": "Session not found. Refresh the page.",
+      "error.target-not-found": "Message not found. Try again.",
+      "error.session-not-found": "Session not found.",
       "error.text-invalid": "Enter message text.",
       "error.text-too-large": "The message text is too large.",
       "error.network": "Could not reach the server.",
@@ -30,9 +31,10 @@ window.__ModuleLoader__.load({
       unavailable: "이 메시지는 변경할 수 없습니다.",
       "error.stale": "메시지가 변경되었습니다. 취소한 뒤 다시 시도하세요.",
       "error.compacted": "이미 컨텍스트 요약에 포함된 메시지는 여기서 수정할 수 없습니다.",
+      "error.binding-unavailable": "이 세션은 화면에서 바로 갱신할 수 없습니다. 세션을 다시 연 뒤 시도하세요.",
       "error.session-busy": "세션이 실행 중입니다. 끝난 뒤에 수정하거나 삭제하세요.",
-      "error.target-not-found": "메시지를 찾을 수 없습니다. 페이지를 새로고침하세요.",
-      "error.session-not-found": "세션을 찾을 수 없습니다. 페이지를 새로고침하세요.",
+      "error.target-not-found": "메시지를 찾을 수 없습니다. 다시 시도하세요.",
+      "error.session-not-found": "세션을 찾을 수 없습니다.",
       "error.text-invalid": "메시지 내용을 입력하세요.",
       "error.text-too-large": "메시지가 너무 깁니다.",
       "error.network": "서버에 연결하지 못했습니다.",
@@ -68,6 +70,31 @@ window.__ModuleLoader__.load({
       if (node?.kind === "turn-tail") return node.data?.closing?.finalNode?.messageId;
       if (node?.kind === "user" || node?.kind === "steering") return node.data?.messageId;
       return undefined;
+    }
+    function snapshotEntries(snapshot) {
+      if (snapshot === null || typeof snapshot !== "object" || typeof snapshot.sessionId !== "string" || snapshot.sessionId === "" || !Array.isArray(snapshot.events)) throw apiError("bad-response");
+      const entries = [];
+      for (const event of snapshot.events) {
+        if (event === null || typeof event !== "object" || typeof event.type !== "string" || typeof event.seq !== "number" || !Number.isFinite(event.seq)) throw apiError("bad-response");
+        entries.push({ type: "event", event });
+      }
+      entries.sort((left, right) => left.event.seq - right.event.seq);
+      let projections;
+      const raw = snapshot.projections;
+      if (raw !== null && typeof raw === "object" && typeof raw.asOfSeq === "number" && Number.isFinite(raw.asOfSeq) && raw.values !== null && typeof raw.values === "object") projections = { asOfSeq: raw.asOfSeq, values: raw.values };
+      let epoch = typeof snapshot.epoch === "string" && snapshot.epoch !== "" ? snapshot.epoch : null;
+      let version = typeof snapshot.version === "number" && Number.isSafeInteger(snapshot.version) && snapshot.version >= 0 ? snapshot.version : null;
+      if ((epoch === null || version === null) && typeof snapshot.revision === "string") {
+        const colon = snapshot.revision.lastIndexOf(":");
+        if (colon > 0) {
+          if (epoch === null) epoch = snapshot.revision.slice(0, colon) || null;
+          if (version === null) {
+            const parsed = Number(snapshot.revision.slice(colon + 1));
+            if (Number.isSafeInteger(parsed) && parsed >= 0) version = parsed;
+          }
+        }
+      }
+      return { sessionId: snapshot.sessionId, entries, projections, epoch, version };
     }
     function locate(anchor, nodes, messageId, suppliedRow) {
       const root = anchor?.closest("[data-conversation-session]");
@@ -110,7 +137,7 @@ window.__ModuleLoader__.load({
       }, [anchor, nodes, messageId, row, editing]);
       return mount ? createPortal(children, mount) : null;
     }
-    function EditDelete({ sessionId, messageId, useSessionStatus, nodes, row, t, native = false }) {
+    function EditDelete({ sessionId, messageId, useSessionStatus, nodes, row, t, native = false, applySnapshot }) {
       const running = useSessionStatus((state) => state.get(sessionId)?.running === true);
       const liveRunning = React.useRef(running);
       liveRunning.current = running;
@@ -147,13 +174,15 @@ window.__ModuleLoader__.load({
       };
       const mutate = async (kind, revision, text, controller) => {
         if (liveRunning.current) throw apiError("session-busy");
+        if (typeof applySnapshot !== "function") throw apiError("binding-unavailable");
         const value = await request("/" + kind, {
           method: "POST", headers: { "content-type": "application/json" },
           body: JSON.stringify({ sessionId, messageId, revision, ...(kind === "edit" ? { text } : {}) })
         }, controller);
         if (!alive.current || controller.signal.aborted) return;
-        if (value.reload !== true) throw apiError("bad-response");
-        window.location.reload();
+        if (value === null || typeof value !== "object" || value.updated !== true || value.sessionId !== sessionId) throw apiError("bad-response");
+        applySnapshot(value);
+        setEdit(null);
       };
       const open = (kind) => perform(async (controller) => {
         setEdit(null);
@@ -205,7 +234,7 @@ window.__ModuleLoader__.load({
       return h(EditDelete, { ...props, nodes, native: true });
     }
     function InlinePortals(props) {
-      const { sessionId, useChat } = props;
+      const { sessionId, useChat, retainSnapshots } = props;
       const nodes = useChat((state) => state.nodes);
       const order = useChat((state) => state.order);
       const anchor = React.useRef(null);
@@ -267,10 +296,205 @@ window.__ModuleLoader__.load({
           mounts.forEach((mount) => mount.remove());
         };
       }, [sessionId, nodes, order]);
+      React.useEffect(() => {
+        if (typeof retainSnapshots !== "function" || typeof sessionId !== "string" || sessionId === "") return;
+        return retainSnapshots(sessionId);
+      }, [retainSnapshots, sessionId]);
       return h(React.Fragment, null, h("span", { ref: anchor, hidden: true, "data-st-owned": "anchor" }),
         entries.map((entry) => createPortal(h(EditDelete, { ...props, nodes, row: entry.row, messageId: entry.messageId }), entry.mount, entry.messageId)));
     }
     function apply(ctx) {
+      const channels = new Map();
+      const channelFor = (sessionId) => {
+        let channel = channels.get(sessionId);
+        if (channel === undefined) {
+          channel = { epoch: null, version: null, subscribers: 0, source: null, guard: null, authoritative: null };
+          channels.set(sessionId, channel);
+        }
+        return channel;
+      };
+      const sequenceOf = (entry) => entry !== null && typeof entry === "object" && entry.event !== null && typeof entry.event === "object" && typeof entry.event.seq === "number" && Number.isFinite(entry.event.seq) ? entry.event.seq : null;
+      const overlayEntry = (authoritative, entry) => {
+        const seq = sequenceOf(entry);
+        if (seq === null || authoritative === null) return entry;
+        const known = authoritative.bySeq.get(seq);
+        return known === undefined ? entry : known;
+      };
+      const increasing = (entries) => {
+        let previous = null;
+        for (const entry of entries) {
+          const seq = sequenceOf(entry);
+          if (seq === null) return false;
+          if (previous !== null && seq <= previous) return false;
+          previous = seq;
+        }
+        return true;
+      };
+      const projected = (projections, authoritative) => {
+        if (authoritative === null || projections === null || typeof projections !== "object" || typeof projections.asOfSeq !== "number" || !Number.isFinite(projections.asOfSeq)) return projections;
+        return projections.asOfSeq <= authoritative.lastSeq ? authoritative.projections : projections;
+      };
+      const guardedInstall = (guard, session, entries, hasMore, projections, assistantStream) => {
+        const authoritative = guard.channel.authoritative;
+        const incoming = Array.isArray(entries) ? entries : [];
+        if (authoritative === null || authoritative.lastSeq < 0) return guard.originalInstallWindow.call(session, entries, hasMore, projections, assistantStream);
+        const bySeq = new Map(authoritative.bySeq);
+        const current = guard.eventSource?.getSnapshot?.().entries ?? [];
+        for (const entry of current.concat(incoming)) {
+          const seq = sequenceOf(entry);
+          if (entry.type === "event" && seq !== null && seq > authoritative.lastSeq) bySeq.set(seq, entry);
+        }
+        const merged = bySeq.size === authoritative.bySeq.size ? authoritative.entries : [...bySeq.values()].sort((a, b) => sequenceOf(a) - sequenceOf(b));
+        const last = sequenceOf(merged[merged.length - 1]);
+        if (increasing(merged) && sequenceOf(merged[0]) === 0 && last + 1 === merged.length) {
+          const baseline = projected(projections, authoritative);
+          const currentBaseline = baseline && baseline.asOfSeq < last ? undefined : baseline;
+          const incomingLast = sequenceOf(incoming[incoming.length - 1]);
+          return guard.originalInstallWindow.call(session, merged, false, currentBaseline, incomingLast !== null && incomingLast >= last && last > authoritative.lastSeq ? assistantStream : undefined);
+        }
+        return guard.originalInstallWindow.call(session, incoming.map((entry) => overlayEntry(authoritative, entry)), hasMore, projected(projections, authoritative), assistantStream);
+      };
+      const guardedPrepend = (guard, session, entries, hasMore) => {
+        const authoritative = guard.channel.authoritative;
+        const incoming = Array.isArray(entries) ? entries : [];
+        if (authoritative === null || authoritative.lastSeq < 0 || incoming.length === 0) return guard.originalPrependWindow.call(session, entries, hasMore);
+        const baseSeq = typeof session.baseSeq === "number" && Number.isFinite(session.baseSeq) ? session.baseSeq : 0;
+        const filtered = [];
+        for (const entry of incoming) {
+          const seq = sequenceOf(entry);
+          if (seq === null || seq < 0 || seq >= baseSeq) continue;
+          filtered.push(overlayEntry(authoritative, entry));
+        }
+        if (filtered.length === 0) return;
+        return guard.originalPrependWindow.call(session, filtered, hasMore);
+      };
+      const releaseGuard = (channel) => {
+        const guard = channel.guard;
+        if (guard === null) return;
+        channel.guard = null;
+        const session = guard.session;
+        if (guard.ownInstall === undefined) delete session.installWindow;
+        else Object.defineProperty(session, "installWindow", guard.ownInstall);
+        if (guard.ownPrepend === undefined) delete session.prependWindow;
+        else Object.defineProperty(session, "prependWindow", guard.ownPrepend);
+      };
+      const ensureGuard = (sessionId) => {
+        const channel = channelFor(sessionId);
+        const binding = ctx.sessions.binding(sessionId);
+        const session = binding === undefined || binding === null ? undefined : binding.session;
+        if (session === undefined || session === null || typeof session.installWindow !== "function" || typeof session.prependWindow !== "function") return null;
+        if (channel.guard !== null && channel.guard.session === session) return channel.guard;
+        if (channel.guard !== null) releaseGuard(channel);
+        const ownInstall = Object.getOwnPropertyDescriptor(session, "installWindow");
+        const ownPrepend = Object.getOwnPropertyDescriptor(session, "prependWindow");
+        const guard = {
+          channel,
+          session,
+          eventSource: binding.eventSource,
+          originalInstallWindow: session.installWindow,
+          originalPrependWindow: session.prependWindow,
+          ownInstall,
+          ownPrepend
+        };
+        Object.defineProperty(session, "installWindow", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function (entries, hasMore, projections, assistantStream) {
+            return guardedInstall(guard, this, entries, hasMore, projections, assistantStream);
+          }
+        });
+        Object.defineProperty(session, "prependWindow", {
+          configurable: true,
+          enumerable: false,
+          writable: true,
+          value: function (entries, hasMore) {
+            return guardedPrepend(guard, this, entries, hasMore);
+          }
+        });
+        channel.guard = guard;
+        return guard;
+      };
+      const remember = (channel, normalized) => {
+        if (normalized.version === null || normalized.version <= 0 || normalized.entries.length === 0) return;
+        const bySeq = new Map();
+        for (const entry of normalized.entries) {
+          const seq = sequenceOf(entry);
+          if (seq !== null) bySeq.set(seq, entry);
+        }
+        channel.authoritative = {
+          entries: normalized.entries,
+          projections: normalized.projections,
+          lastSeq: sequenceOf(normalized.entries[normalized.entries.length - 1]),
+          bySeq
+        };
+      };
+      const applySnapshot = (snapshot) => {
+        const normalized = snapshotEntries(snapshot);
+        const channel = channelFor(normalized.sessionId);
+        if (normalized.epoch !== null && normalized.version !== null && channel.epoch === normalized.epoch && channel.version !== null && normalized.version <= channel.version) return false;
+        const binding = ctx.sessions.binding(normalized.sessionId);
+        const session = binding === undefined || binding === null ? undefined : binding.session;
+        if (session === undefined || session === null) throw apiError("binding-unavailable");
+        if (normalized.epoch !== null && channel.epoch !== null && normalized.epoch !== channel.epoch) channel.authoritative = null;
+        const guard = channel.subscribers > 0 ? ensureGuard(normalized.sessionId) : channel.guard !== null && channel.guard.session === session ? channel.guard : null;
+        const installWindow = guard === null ? session.installWindow : guard.originalInstallWindow;
+        if (typeof installWindow !== "function") throw apiError("binding-unavailable");
+        installWindow.call(session, normalized.entries, false, normalized.projections, undefined);
+        if (normalized.epoch !== null) channel.epoch = normalized.epoch;
+        if (normalized.version !== null) channel.version = normalized.version;
+        remember(channel, normalized);
+        return true;
+      };
+      const retainSnapshots = (sessionId) => {
+        const channel = channelFor(sessionId);
+        channel.subscribers += 1;
+        ensureGuard(sessionId);
+        if (channel.source === null && typeof globalThis.EventSource === "function") {
+          let source = null;
+          try {
+            source = new globalThis.EventSource("/plugin-session-tweak/events?session=" + encodeURIComponent(sessionId));
+          } catch (error) {
+            source = null;
+          }
+          if (source !== null) {
+            channel.source = source;
+            const accept = (event) => {
+              if (typeof event.data !== "string" || event.data === "") return;
+              let snapshot;
+              try {
+                snapshot = JSON.parse(event.data);
+              } catch (error) {
+                return;
+              }
+              if (snapshot === null || typeof snapshot !== "object" || snapshot.sessionId !== sessionId) return;
+              try {
+                applySnapshot(snapshot);
+              } catch (error) {}
+            };
+            source.addEventListener("snapshot", accept);
+            source.addEventListener("message", accept);
+          }
+        }
+        let released = false;
+        return () => {
+          if (released) return;
+          released = true;
+          channel.subscribers -= 1;
+          if (channel.subscribers > 0) return;
+          releaseGuard(channel);
+          if (channel.source !== null) channel.source.close();
+          channel.source = null;
+          channels.delete(sessionId);
+        };
+      };
+      ctx.effect(() => () => {
+        for (const channel of channels.values()) {
+          if (channel.source !== null) channel.source.close();
+          releaseGuard(channel);
+        }
+        channels.clear();
+      }, "session-tweak: live snapshot channels");
       ctx.effect(() => ctx.locale.register(NS, { ko, en }), "session-tweak: dictionaries");
       ctx.effect(() => {
         const style = document.createElement("style");
@@ -279,9 +503,9 @@ window.__ModuleLoader__.load({
         document.head.appendChild(style);
         return () => style.remove();
       }, "session-tweak: inline styles");
-      ctx.slots.inject("conversation.input.overlay", () => ctx.slots.register({ name: "conversation.input.overlay", id: "session-tweak-inline", locale: NS }, InlinePortals));
-      ctx.slots.inject("conversation.chat.assistant-actions", () => ctx.slots.register({ name: "conversation.chat.assistant-actions", id: "session-tweak", order: 30, locale: NS }, NativeActions));
+      ctx.slots.inject("conversation.input.overlay", () => ctx.slots.register({ name: "conversation.input.overlay", id: "session-tweak-inline", locale: NS, inject: () => ({ applySnapshot, retainSnapshots }) }, InlinePortals));
+      ctx.slots.inject("conversation.chat.assistant-actions", () => ctx.slots.register({ name: "conversation.chat.assistant-actions", id: "session-tweak", order: 30, locale: NS, inject: () => ({ applySnapshot }) }, NativeActions));
     }
-    return { name: "session-tweak", inject: ["slots", "locale"], apply };
+    return { name: "session-tweak", inject: ["slots", "locale", "sessions"], apply };
   }
 });

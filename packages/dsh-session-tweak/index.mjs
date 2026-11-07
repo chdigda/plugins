@@ -1,7 +1,7 @@
 import { createCoordinator } from './lifecycle.mjs';
 
 export const name = 'session-tweak';
-export const inject = ['agents', 'sessions', 'sessionPersistence', 'sessionProjectionCache', 'connection', 'webServer'];
+export const inject = ['agents', 'sessions', 'sessionProjections', 'sessionPersistence', 'sessionProjectionCache', 'connection', 'webServer'];
 const PREFIX = '/plugin-session-tweak';
 const MAX_BODY = 262144;
 
@@ -31,7 +31,8 @@ async function bodyOf(req) {
 }
 
 export function createHandler(ctx, coordinator) {
-  return async (req, res) => {
+  const streams = new Set();
+  const handler = async (req, res) => {
     try {
       const connection = ctx.connection;
       if (typeof connection?.admit === 'function') {
@@ -44,6 +45,33 @@ export function createHandler(ctx, coordinator) {
       }
       const url = new URL(req.url, 'http://localhost');
       const method = req.method;
+      if (url.pathname === PREFIX + '/events') {
+        if (method !== 'GET') return failure(res, 405, 'bad-request', 'GET 요청이 필요합니다.');
+        const id = url.searchParams.get('session');
+        if (!id) return failure(res, 400, 'bad-request', '세션 ID가 필요합니다.');
+        res.writeHead(200, { 'content-type': 'text/event-stream; charset=utf-8', 'cache-control': 'no-store', 'x-accel-buffering': 'no' });
+        res.write(': connected\n\n');
+        let closed = false;
+        const send = value => {
+          if (!closed && value.sessionId === id) res.write('event: snapshot\ndata: ' + JSON.stringify(value) + '\n\n');
+        };
+        const unsubscribe = coordinator.subscribe(send);
+        const timer = setInterval(() => { if (!closed) res.write(': keepalive\n\n'); }, 15000);
+        timer.unref?.();
+        const close = () => {
+          if (closed) return;
+          closed = true;
+          clearInterval(timer);
+          unsubscribe();
+          streams.delete(close);
+          if (!res.writableEnded) res.end();
+        };
+        streams.add(close);
+        res.once('close', close);
+        try { send(await coordinator.snapshot(id)); }
+        catch (error) { if (error.code !== 'session-busy') close(); }
+        return;
+      }
       if (url.pathname === PREFIX + '/message') {
         if (method !== 'GET') return failure(res, 405, 'bad-request', 'GET 요청이 필요합니다.');
         const value = await coordinator.describe(url.searchParams.get('session'), url.searchParams.get('message'));
@@ -62,16 +90,20 @@ export function createHandler(ctx, coordinator) {
       if (!error.code) ctx.logger?.warn?.(error);
     }
   };
+  handler.close = () => { for (const close of [...streams]) close(); };
+  return handler;
 }
 
 export function apply(ctx) {
   ctx.effect(() => {
     const coordinator = createCoordinator(ctx);
+    const handler = createHandler(ctx, coordinator);
     let unregister;
-    try { unregister = ctx.webServer.register({ kind: 'prefix', path: PREFIX, handler: createHandler(ctx, coordinator) }); }
+    try { unregister = ctx.webServer.register({ kind: 'prefix', path: PREFIX, handler }); }
     catch (error) { void coordinator.dispose(); throw error; }
     return async () => {
       unregister();
+      handler.close();
       await coordinator.dispose();
     };
   }, 'session-tweak: direct editing');

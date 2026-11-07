@@ -1,12 +1,17 @@
 import { createHash, randomUUID } from 'node:crypto';
 import { open, rename, unlink, lstat, realpath } from 'node:fs/promises';
-import { dirname, relative, isAbsolute, resolve, sep } from 'node:path';
-import { promisify, isDeepStrictEqual } from 'node:util';
+import { relative, isAbsolute, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
 import { zstdCompress } from 'node:zlib';
 import { loadRuntime } from './runtime.mjs';
 import { findMessage, rewriteEvents } from './rewrite.mjs';
 
 const compress = promisify(zstdCompress);
+
+function freezeJson(value) {
+  if (value && typeof value === 'object') { for (const child of Object.values(value)) freezeJson(child); Object.freeze(value); }
+  return value;
+}
 
 function canonical(value) {
   if (Array.isArray(value)) return value.map(canonical);
@@ -83,7 +88,9 @@ export function createCoordinator(ctx) {
   const registry = unwrap(ctx.agents);
   const persistence = ctx.sessionPersistence;
   const cache = ctx.sessionProjectionCache;
-  const handles = new Map();
+  const revisions = new Map();
+  const epoch = randomUUID();
+  const listeners = new Set();
   const gates = new Set();
   const factories = new Map();
   const cacheWork = new Map();
@@ -114,7 +121,6 @@ export function createCoordinator(ctx) {
       const id = options?.resumeSessionId ?? options?.sessionId;
       if (gates.has(id)) fail('session-busy', 'This session is being rewritten.');
       const result = Promise.resolve(Reflect.apply(original, this, arguments)).then((handle) => {
-        if (handle?.agent && typeof handle.dispose === 'function') handles.set(handle.agent.id, handle);
         return handle;
       });
       return track(factories, id, result);
@@ -142,7 +148,10 @@ export function createCoordinator(ctx) {
 
   function restoreSession(header, events, inheritedEventCount) {
     runtime.assertReleasedV4Relationships({ header, events, inheritedEventCount }, runtime.KNOWN_SESSION_EVENT_TYPES);
-    return runtime.Session.fromRestore(header.id, structuredClone(events), structuredClone(header), inheritedEventCount, 'detached', ctx.sessions.messageProjections ?? runtime.currentSessionMessageProjections);
+    const session = runtime.Session.fromRestore(header.id, structuredClone(events), structuredClone(header), inheritedEventCount, 'detached', ctx.sessions.messageProjections ?? runtime.currentSessionMessageProjections);
+    session.log.length = events.length;
+    session.surfaceManager._pendingPlan = undefined;
+    return session;
   }
 
   async function cold(id) {
@@ -160,7 +169,6 @@ export function createCoordinator(ctx) {
     if (agent?.status === 'running' || (agent?.phase && agent.phase.kind !== 'idle')) return 'session-busy';
     const events = eventsOf(session);
     if (openTurn(events) || agent?.inbox?.hasPending || pendingInbox(events)) return 'session-busy';
-    if ((agent || ctx.sessions.get(id)) && (!agent || handles.get(id)?.agent !== agent)) return 'restart-required';
     return undefined;
   }
 
@@ -182,95 +190,158 @@ export function createCoordinator(ctx) {
     return operation;
   }
 
+  function prepareMemory(session, rewritten) {
+    const template = runtime.Session.create(session.id);
+    const log = rewritten.map(event => freezeJson(structuredClone(event)));
+    template.log = log;
+    template.surfaceManager = new session.surfaceManager.constructor(log, 0, ctx.sessions.messageProjections ?? runtime.currentSessionMessageProjections);
+    void template.surfaceManager.nodes;
+    template.surfaceManager._state.contentGeneration = Math.max(template.surfaceManager.contentGeneration, session.surface.contentGeneration + 1);
+    template.surfaceManager._state.replaceGeneration = Math.max(template.surfaceManager.replaceGeneration, session.surface.replaceGeneration + 1);
+    const preserve = new Set(['header', 'inheritedEventCount', 'firstLiveSeq', 'firstLifecycleSeq']);
+    const fields = Object.fromEntries(Object.keys(template).filter(key => !preserve.has(key)).map(key => [key, template[key]]));
+    const registry = unwrap(ctx.sessionProjections);
+    if (!registry?.registrations || typeof registry.buildCell !== 'function') fail('runtime-unsupported', 'Live session projections are unavailable.');
+    const cells = [...registry.registrations.values()].map(registration => ({ registration, cell: registry.buildCell(registration.def, session.header, session.inheritedEventCount, log) }));
+    for (const { registration, cell } of cells) if (registration.refs > 0 && registration.def.wire) registry.viewCell(registration, cell);
+    return { fields, registry, cells };
+  }
+
+  function commitMemory(session, prepared) {
+    Object.assign(session, prepared.fields);
+    for (const { registration, cell } of prepared.cells) registration.cells.set(session, cell);
+  }
+
+  function announceProjections(session, registry) {
+    const baseline = registry.snapshot(session);
+    const changes = Object.entries(baseline.values).map(([key, val]) => ({ key, val }));
+    for (const { key, val } of changes) for (const listener of registry.listeners) {
+      try { listener(session, key, val, baseline.asOfSeq); } catch {}
+    }
+    for (const listener of registry.eventListeners) {
+      try { listener(session, changes, baseline.asOfSeq); } catch {}
+    }
+    return baseline;
+  }
+
+  function packSnapshot(session) {
+    const id = session.id;
+    return {
+      sessionId: id,
+      revision: epoch + ':' + (revisions.get(id) ?? 0),
+      epoch,
+      version: revisions.get(id) ?? 0,
+      events: eventsOf(session),
+      header: session.header,
+      inheritedEventCount: session.inheritedEventCount,
+      projections: ctx.sessionProjections.snapshot(session),
+    };
+  }
+
+  async function snapshotInner(id) {
+    assertOpen();
+    if (typeof id !== 'string' || !id) fail('bad-request', 'Session id is required.');
+    if (gates.has(id) || ctx.agents.get(id)?.status === 'running') fail('session-busy', 'This session is being edited or running.');
+    const before = revisions.get(id) ?? 0;
+    const session = ctx.sessions.get(id) ?? await cold(id);
+    if ((revisions.get(id) ?? 0) !== before) return snapshot(id);
+    return packSnapshot(session);
+  }
+
+  function snapshot(id) {
+    assertOpen();
+    const operation = snapshotInner(id);
+    operations.add(operation);
+    operation.then(() => operations.delete(operation), () => operations.delete(operation));
+    return operation;
+  }
+
   async function rewrite(payload) {
-    const { sessionId: id, messageId, revision, operation, text } = payload;
+    const { sessionId: id, messageId, revision } = payload;
     const localRestores = [];
-    let lease;
+    let ownedLease;
     try {
       if (factories.has(id)) fail('session-busy', 'Session creation or resume is still in progress.');
       const agent = ctx.agents.get(id);
       const live = agent?.session ?? ctx.sessions.get(id);
       const initial = live ?? await cold(id);
-      if (agent?.status === 'running' || (agent?.phase && agent.phase.kind !== 'idle') || openTurn(eventsOf(initial)) || agent?.inbox?.hasPending || pendingInbox(eventsOf(initial))) fail('session-busy', 'Wait until the session and inbox are idle.');
-      const owner = handles.get(id);
-      if (live && (!agent || owner?.agent !== agent)) fail('restart-required', 'Restart DSH with this plugin enabled before editing this live session.');
-      if (targetOf(initial, messageId).revision !== revision) fail('stale', 'The message has changed. Refresh and try again.');
-      const options = { ...payload, expectedText: targetOf(initial, messageId).message.text };
-      const preflight = rewriteEvents(eventsOf(initial), options);
-      const preflightEvents = Array.isArray(preflight) ? preflight : preflight.events;
-      restoreSession(initial.header, preflightEvents, initial.inheritedEventCount);
-      runtime.sessionFormatCatalog.encodeCurrentHeader({ ...initial.header, delegationDepth: initial.header.delegationDepth ?? 0 }, initial.inheritedEventCount);
-      for (const event of preflightEvents) runtime.sessionFormatCatalog.encodeCurrentEvent(event);
-      if (agent) {
-        const originalMaintenance = agent.runMaintenance;
-        if (typeof originalMaintenance !== 'function') fail('runtime-unsupported', 'Agent maintenance admission is unavailable.');
-        for (const key of ['send', 'followup', 'steer', 'inject', 'addContext', 'runMaintenance']) {
-          if (typeof agent[key] === 'function') patchOwn(agent, key, () => fail('session-busy', 'This session is being rewritten.'), localRestores);
-        }
-        patchOwn(live, 'append', () => fail('session-busy', 'This session is being rewritten.'), localRestores);
-        try {
-          await Reflect.apply(originalMaintenance, agent, [() => undefined]);
-        } catch (error) {
-          fail('session-busy', `Session maintenance admission failed: ${error.message}`);
-        }
-        if (!await ctx.sessions.flush(live)) fail('persistence-unavailable', 'The live session has no persistence writer.');
-        await owner.dispose();
-        handles.delete(id);
-        if (ctx.agents.get(id) || ctx.sessions.get(id)) fail('session-busy', 'The session did not fully unload.');
+      if (agent?.status === 'running' || (agent?.phase && agent.phase.kind !== 'idle') || openTurn(eventsOf(initial)) || agent?.inbox?.hasPending || pendingInbox(eventsOf(initial))) fail('session-busy', 'Wait until this session is idle.');
+      if (targetOf(initial, messageId).revision !== revision) fail('stale', 'The message has changed.');
+      const activeWriter = unwrap(persistence).tracker?.writers?.get(id);
+      if (live && (!activeWriter || typeof activeWriter.enqueueChain !== 'function')) fail('runtime-unsupported', 'The current session writer is unavailable.');
+      const maintenance = agent?.runMaintenance;
+      if (agent && typeof maintenance !== 'function') fail('runtime-unsupported', 'Agent maintenance admission is unavailable.');
+      if (agent) for (const key of ['send', 'followup', 'steer', 'inject', 'addContext', 'runMaintenance']) {
+        if (typeof agent[key] === 'function') patchOwn(agent, key, () => fail('session-busy', 'This session is being edited.'), localRestores);
       }
-      lease = await persistence.open(id, 'write');
-      const { events } = await lease.read(0);
-      const finalSession = restoreSession(lease.header, events, lease.inheritedEventCount);
-      if (openTurn(events) || pendingInbox(events)) fail('session-busy', 'The persisted session is not idle.');
-      if (targetOf(finalSession, messageId).revision !== revision) fail('stale', 'The persisted message has changed. Refresh and try again.');
-      const result = rewriteEvents(events, { ...options, operation, text });
-      const rewritten = Array.isArray(result) ? result : result.events;
-      restoreSession(lease.header, rewritten, lease.inheritedEventCount);
-      const located = persistence.locate(lease.header);
-      if (located?.kind !== 'jsonl' || lease.header.version !== 4) fail('runtime-unsupported', 'Only installed current v4 JSONL storage can be rewritten.');
-      const path = resolve(located.path);
-      const root = await realpath(resolve(persistence.config.root));
-      const actual = await realpath(path);
-      const rel = relative(root, actual);
-      const info = await lstat(path);
-      if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) || info.isSymbolicLink() || !info.isFile()) fail('storage-invalid', 'Session artifact is not a regular file beneath its configured root.');
-      const catalog = runtime.sessionFormatCatalog;
-      const header = JSON.stringify(catalog.encodeCurrentHeader(lease.header, lease.inheritedEventCount)) + '\n';
-      const body = rewritten.map((event) => JSON.stringify(catalog.encodeCurrentEvent(event))).join('\n') + (rewritten.length ? '\n' : '');
-      const bytes = path.endsWith('.zstd') ? Buffer.concat([await compress(header), ...(body ? [await compress(body)] : [])]) : Buffer.from(header + body);
-      if (cache) {
-        await Promise.allSettled([...(cacheWork.get(id) ?? [])]);
-        const table = cache.requireTable();
-        if (typeof table.delete !== 'function') fail('runtime-unsupported', 'Projection cache invalidation is unavailable.');
-        await table.delete(id);
-      }
-      const temp = path + '.' + randomUUID() + '.tmp';
-      let created = false;
-      try {
-        const file = await open(temp, 'wx', info.mode & 0o777);
-        created = true;
-        try {
-          await file.writeFile(bytes);
-          await file.sync();
-        } finally {
-          await file.close();
+      if (live) patchOwn(live, 'append', () => fail('session-busy', 'This session is being edited.'), localRestores);
+      const transaction = async () => {
+        let writer = activeWriter;
+        let current = initial;
+        if (live) {
+          if (!await ctx.sessions.flush(live)) fail('persistence-unavailable', 'The live session has no persistence writer.');
+          await writer.drainLive();
+          await writer.flush();
+          await writer.chain;
+        } else {
+          ownedLease = writer = await persistence.open(id, 'write');
+          const read = await writer.read(0);
+          current = restoreSession(writer.header, read.events, writer.inheritedEventCount);
         }
-        await rename(temp, path);
-        created = false;
-        if (process.platform !== 'win32') {
-          const directory = await open(dirname(path), 'r');
-          try { await directory.sync(); } finally { await directory.close(); }
+        const currentEvents = eventsOf(current);
+        if (writer.state.cursor !== currentEvents.length) fail('session-busy', 'The session writer has pending events.');
+        if (targetOf(current, messageId).revision !== revision) fail('stale', 'The message has changed.');
+        const options = { ...payload, expectedText: targetOf(current, messageId).message.text };
+        const { events: rewritten } = rewriteEvents(currentEvents, options);
+        const detached = restoreSession(writer.header, rewritten, writer.inheritedEventCount);
+        ctx.sessionProjections.snapshot(detached);
+        const prepared = live ? prepareMemory(live, rewritten) : undefined;
+        const catalog = runtime.sessionFormatCatalog;
+        const header = JSON.stringify(catalog.encodeCurrentHeader({ ...writer.header, delegationDepth: writer.header.delegationDepth ?? 0 }, writer.inheritedEventCount)) + '\n';
+        const body = rewritten.map(event => JSON.stringify(catalog.encodeCurrentEvent(event))).join('\n') + (rewritten.length ? '\n' : '');
+        const located = persistence.locate(writer.header);
+        if (located?.kind !== 'jsonl' || writer.header.version !== 4) fail('runtime-unsupported', 'Only current v4 JSONL storage is supported.');
+        const path = resolve(located.path);
+        const root = await realpath(resolve(persistence.config.root));
+        const actual = await realpath(path);
+        const rel = relative(root, actual);
+        const info = await lstat(path);
+        if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel) || info.isSymbolicLink() || !info.isFile()) fail('storage-invalid', 'Invalid session artifact.');
+        const bytes = path.endsWith('.zstd') ? Buffer.concat([await compress(header), ...(body ? [await compress(body)] : [])]) : Buffer.from(header + body);
+        if (cache) {
+          await Promise.allSettled([...(cacheWork.get(id) ?? [])]);
+          cache.markClean?.(live ?? current);
+          await cache.requireTable().delete(id);
         }
-      } finally {
-        if (created) await unlink(temp);
-      }
-      const verified = await cold(id);
-      if (!isDeepStrictEqual(eventsOf(verified).slice(0, rewritten.length), rewritten)) fail('verification-failed', 'Replacement verification failed. The session remains unloaded.');
-      await lease.close();
-      lease = undefined;
-      return { reload: true };
+        return writer.enqueueChain(async () => {
+          if (writer.closing || writer.buffered.length || writer.state.cursor !== currentEvents.length) fail('session-busy', 'The session writer changed during editing.');
+          const temp = path + '.' + randomUUID() + '.tmp';
+          let created = false;
+          try {
+            const file = await open(temp, 'wx', info.mode & 0o777);
+            created = true;
+            try { await file.writeFile(bytes); await file.sync(); } finally { await file.close(); }
+            await rename(temp, path);
+            created = false;
+            writer.state = { cursor: rewritten.length, materialized: true, inheritedEventCount: writer.inheritedEventCount };
+            writer.observedLength = rewritten.length;
+            writer.drainPaused = false;
+            unwrap(persistence).coldLogMemo?.delete(id);
+            if (live) commitMemory(live, prepared);
+            revisions.set(id, (revisions.get(id) ?? 0) + 1);
+            const session = live ?? detached;
+            if (live) announceProjections(live, prepared.registry);
+            const result = packSnapshot(session);
+            for (const listener of listeners) { try { listener(result); } catch {} }
+            return { updated: true, ...result };
+          } finally {
+            if (created) await unlink(temp);
+          }
+        });
+      };
+      return agent ? await Reflect.apply(maintenance, agent, [transaction]) : await transaction();
     } finally {
-      try { if (lease) await lease.close(); } finally {
+      try { if (ownedLease) await ownedLease.close(); } finally {
         for (const restore of localRestores.reverse()) restore();
         gates.delete(id);
       }
@@ -297,10 +368,17 @@ export function createCoordinator(ctx) {
       await Promise.allSettled([...operations]);
       await Promise.allSettled([...factories.values()].flatMap((set) => [...set]));
       for (const restore of restores.reverse()) restore();
-      handles.clear();
+      listeners.clear();
+      revisions.clear();
     })();
     return stopping;
   }
 
-  return { describe, mutate, dispose };
+  if (typeof ctx.on === 'function') restores.push(ctx.on('agent/status', ({ agent, status }) => {
+    if (stopped || status !== 'idle' || gates.has(agent.id) || !revisions.has(agent.id)) return;
+    const value = packSnapshot(agent.session);
+    for (const listener of listeners) { try { listener(value); } catch {} }
+  }));
+
+  return { describe, mutate, snapshot, subscribe(listener) { assertOpen(); listeners.add(listener); return () => listeners.delete(listener); }, dispose };
 }
