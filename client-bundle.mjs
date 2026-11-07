@@ -284,7 +284,7 @@ function createPluginCollectionController(options) {
   var byName = {};
   plugins.forEach(function (plugin) { byName[plugin.name] = plugin; });
   var state = {
-    phase: 'idle', repo: null, hubVersion: null, error: null, restart: false,
+    phase: 'idle', repo: null, hubVersion: null, hub: null, error: null, restart: false,
     rows: plugins.map(function (plugin) {
       return { name: plugin.name, installed: false, enabled: false, version: null, latest: null, status: 'unknown', source: null, busy: false, error: null };
     })
@@ -329,9 +329,19 @@ function createPluginCollectionController(options) {
     row.status = pluginCollectionRowStatus(row, specFor(plugin));
     return row;
   }
+  function describeHub(list, previous) {
+    var self = bundleOf(list, options.packageName);
+    var source = self && typeof self.source === 'string' ? self.source : null;
+    var version = self && self.installed && typeof self.version === 'string' ? self.version : null;
+    var latest = previous && previous.source === source ? previous.latest : null;
+    var spec = specFor({ dir: '' });
+    var row = { name: options.packageName, installed: !!(self && self.installed), version: version, latest: latest, source: source, spec: spec, error: null };
+    row.status = pluginCollectionRowStatus(row, spec);
+    return row;
+  }
   function hubVersionOf(list) {
     var self = bundleOf(list, options.packageName);
-    return self && typeof self.version === 'string' ? self.version : null;
+    return self && self.installed && typeof self.version === 'string' ? self.version : null;
   }
   async function refresh() {
     if (detached || applying) return;
@@ -340,7 +350,7 @@ function createPluginCollectionController(options) {
       var list = await bundleRecords();
       if (detached || token !== generation) return;
       emit({ repo: repoOf(list) });
-      emit({ rows: state.rows.map(function (row) { return describe(list, byName[row.name], row); }), hubVersion: hubVersionOf(list), error: null });
+      emit({ rows: state.rows.map(function (row) { return describe(list, byName[row.name], row); }), hubVersion: hubVersionOf(list), hub: describeHub(list, state.hub), error: null });
     } catch (error) {
       if (!detached && token === generation) emit({ phase: 'error', error: String(error.message || error) });
     }
@@ -358,9 +368,9 @@ function createPluginCollectionController(options) {
       var repo = repoOf(list);
       emit({ repo: repo });
       var rows = state.rows.map(function (row) { return describe(list, byName[row.name], row); });
-      emit({ rows: rows, repo: repo, hubVersion: hubVersionOf(list) });
-      var results = await Promise.all(rows.map(function (row) {
-        var plugin = byName[row.name];
+      var hub = describeHub(list, state.hub);
+      emit({ rows: rows, repo: repo, hubVersion: hubVersionOf(list), hub: hub });
+      var results = await Promise.all([{ name: options.packageName, dir: '' }].concat(rows.map(function (row) { return byName[row.name]; })).map(function (plugin) {
         return pluginCollectionFetchVersion(fetcher, repo, plugin.dir, plugin.name, request.signal, options.timeoutMs)
           .then(function (version) { return { name: plugin.name, version: version }; },
             function (error) { return { name: plugin.name, error: String((error && error.message) || error) }; });
@@ -368,7 +378,9 @@ function createPluginCollectionController(options) {
       if (detached || token !== generation) return;
       var versions = {}, failures = {};
       results.forEach(function (result) { if (result.error) failures[result.name] = result.error; else versions[result.name] = result.version; });
-      emit({ phase: 'checked', rows: state.rows.map(function (row) {
+      var hubPatch = { latest: failures[options.packageName] ? null : versions[options.packageName] || null, error: failures[options.packageName] || null };
+      hubPatch.status = pluginCollectionRowStatus(Object.assign({}, state.hub, hubPatch), specFor({ dir: '' }));
+      emit({ phase: 'checked', hub: Object.assign({}, state.hub, hubPatch), rows: state.rows.map(function (row) {
         var latest = versions[row.name] !== undefined ? versions[row.name] : row.latest;
         var patch = { latest: failures[row.name] ? null : latest, error: failures[row.name] || null };
         patch.status = pluginCollectionRowStatus(Object.assign({}, row, patch), specFor(byName[row.name]));
@@ -413,7 +425,7 @@ function createPluginCollectionController(options) {
       if (row.latest && pluginUpdatesCompare(version, row.latest) < 0) throw new Error('Installed version is older than the checked GitHub version; check again');
       emit({ rows: state.rows.map(function (item) {
         return item.name === name ? describe(after, plugin, item) : item;
-      }), hubVersion: hubVersionOf(after), phase: 'checked', restart: restart });
+      }), hubVersion: hubVersionOf(after), hub: describeHub(after, state.hub), phase: 'checked', restart: restart });
     } catch (error) {
       var message = String((error && error.message) || error);
       patchRow(name, { busy: false, error: message });
@@ -450,9 +462,10 @@ function createPluginCollection(config) {
   var h = React.createElement;
   var namespace = 'pluginCollection.' + config.packageName;
   var en = {
-    title: 'Plugin collection', hubVersion: 'Collection manager', empty: 'This collection declares no plugins.',
+    title: 'Plugin collection', hubVersion: 'Collection manager', installed: 'Installed', latest: 'Latest', empty: 'This collection declares no plugins.',
+    selfUpdate: 'A newer collection manager is available. This Harness cannot safely replace a running Git-installed manager. Remove only the collection manager and reinstall it from this address; the child plugins remain installed.',
     check: 'Check for updates', recheck: 'Check again', checking: 'Checking GitHub versions…',
-    applyAll: 'Install or update all', idle: 'Check the installed GitHub source for each plugin version.',
+    applyAll: 'Install or update all child plugins', idle: 'Check the installed GitHub source for each plugin version.',
     checked: 'Versions checked.', applying: 'Applying changes…', error: 'Collection error',
     restart: 'Restart DSH and refresh this page to load the changes.',
     install: 'Install', update: 'Update',
@@ -463,9 +476,10 @@ function createPluginCollection(config) {
     foreignNote: 'This plugin is installed from a source this collection does not manage. Install it from the collection source to manage updates here.'
   };
   var ko = {
-    title: '플러그인 컬렉션', hubVersion: '컬렉션 관리자', empty: '이 컬렉션에는 플러그인이 없습니다.',
+    title: '플러그인 컬렉션', hubVersion: '컬렉션 관리자', installed: '설치', latest: '최신', empty: '이 컬렉션에는 플러그인이 없습니다.',
+    selfUpdate: '새 컬렉션 관리자가 있습니다. 이 Harness는 실행 중인 Git 설치 관리자를 안전하게 교체할 수 없습니다. 컬렉션 관리자만 제거한 뒤 아래 주소로 다시 설치하세요. 하위 플러그인은 설치된 채 유지됩니다.',
     check: '업데이트 확인', recheck: '다시 확인', checking: 'GitHub 버전 확인 중…',
-    applyAll: '전체 설치·업데이트', idle: '설치된 GitHub 소스에서 각 플러그인의 최신 버전을 확인합니다.',
+    applyAll: '하위 플러그인 전체 설치·업데이트', idle: '설치된 GitHub 소스에서 각 플러그인의 최신 버전을 확인합니다.',
     checked: '버전을 확인했습니다.', applying: '변경 적용 중…', error: '컬렉션 오류',
     restart: 'DSH를 재시작한 뒤 이 페이지를 새로고침하면 변경 사항이 적용됩니다.',
     install: '설치', update: '업데이트',
@@ -476,9 +490,10 @@ function createPluginCollection(config) {
     foreignNote: '이 플러그인은 이 컬렉션이 관리하지 않는 소스로 설치되어 있습니다. 여기서 업데이트하려면 컬렉션 소스로 설치하세요.'
   };
   var zh = {
-    title: '插件合集', hubVersion: '合集管理', empty: '此合集未声明插件。',
+    title: '插件合集', hubVersion: '合集管理', installed: '已安装', latest: '最新', empty: '此合集未声明插件。',
+    selfUpdate: '合集管理器有新版本。此 Harness 无法安全替换正在运行的 Git 安装管理器。请仅移除合集管理器，再使用以下地址安装；子插件会保持安装。',
     check: '检查更新', recheck: '重新检查', checking: '正在检查 GitHub 版本…',
-    applyAll: '安装或更新全部', idle: '从已安装的 GitHub 源检查各插件的版本。',
+    applyAll: '安装或更新全部子插件', idle: '从已安装的 GitHub 源检查各插件的版本。',
     checked: '版本已检查。', applying: '正在应用更改…', error: '合集错误',
     restart: '请重新启动 DSH 并刷新此页面以应用更改。',
     install: '安装', update: '更新',
@@ -530,7 +545,13 @@ function createPluginCollection(config) {
         return h('div', { style: { display: 'grid', gap: 10, fontSize: 13 } }, [
           h('div', { key: 'head', style: { display: 'grid', gap: 2 } }, [
             h('strong', { key: 't' }, t('title')),
-            h('span', { key: 'v', style: hintStyle }, t('hubVersion') + ' ' + (snapshot.hubVersion || '—'))
+            h('span', { key: 'v', style: hintStyle }, t('hubVersion') + ' · ' + t('installed') + ' ' + (snapshot.hubVersion || '—') + (snapshot.hub && snapshot.hub.latest ? ' → ' + t('latest') + ' ' + snapshot.hub.latest : '')),
+            snapshot.hub ? h('span', { key: 's', style: hintStyle }, t('status.' + snapshot.hub.status)) : null,
+            snapshot.hub && snapshot.hub.error ? h('span', { key: 'e', role: 'alert', style: hintStyle }, snapshot.hub.error) : null,
+            snapshot.hub && snapshot.hub.status === 'available' ? h('div', { key: 'u', style: { display: 'grid', gap: 4 } }, [
+              h('span', { key: 'n', style: hintStyle }, t('selfUpdate')),
+              h('code', { key: 'spec', style: { overflowWrap: 'anywhere', userSelect: 'text' } }, snapshot.hub.spec)
+            ]) : null
           ]),
           h('div', { key: 'status', role: snapshot.phase === 'error' ? 'alert' : 'status', 'aria-live': 'polite' }, t(snapshot.phase)),
           h('div', { key: 'actions', style: { display: 'flex', flexWrap: 'wrap', gap: 8 } }, [
