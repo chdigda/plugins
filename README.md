@@ -6,7 +6,7 @@ DeepSeek Harness용 독립 플러그인 모음입니다. 저장소와 개발 브
 | --- | --- |
 | [dsh-session-delete](packages/dsh-session-delete/README.md) | 확인 후 다음 DSH 재시작 때 세션 영구 삭제 (Linux·Windows / Node 24+) |
 | [dsh-web-search](packages/dsh-web-search/README.md) | Tavily 검색, Brave 대체 검색, API 키 설정 화면 |
-| [dsh-session-tweak](packages/dsh-session-tweak/README.md) | 모델 컨텍스트에서 사용자 메시지 수정·메시지 제거 |
+| [dsh-session-tweak](packages/dsh-session-tweak/README.md) | 사용자·봇 메시지 인라인 수정·삭제 (원본 JSON 직접 변경, dev) |
 
 ## Harness에서 설치
 
@@ -28,7 +28,7 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 **세션 트윅**
 
 ```text
-git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-tweak
+git+https://github.com/chdigda/plugins.git#dev&path:/packages/dsh-session-tweak
 ```
 
 3. Harness가 재시작을 요구하면 다시 시작하고 브라우저를 새로고침합니다. 세션 삭제는 부팅 순서가 필요하므로 설치 후 반드시 재시작합니다.
