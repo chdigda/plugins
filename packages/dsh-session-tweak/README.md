@@ -2,12 +2,12 @@
 
 사용자·봇 메시지 아래의 **수정·삭제** 버튼으로 원본 세션 JSON 로그와 열린 대화에 변경을 바로 반영합니다. 저장 후 새로고침·세션 다시 열기가 필요하지 않으며, 백업·복구본을 만들지 않습니다.
 
-## 개발 버전 설치
+## 설치
 
 Harness의 **Plugins → + Add plugin**에 입력합니다.
 
 ```text
-git+https://github.com/chdigda/plugins.git#dev&path:/packages/dsh-session-tweak
+git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-tweak
 ```
 
 플러그인 설치·갱신 자체에 Harness가 재시작이나 브라우저 새로고침을 요구하면 그 안내를 따르세요. 메시지 편집 때는 필요하지 않습니다.

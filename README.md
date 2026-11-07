@@ -53,8 +53,9 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 **세션 트윅**
 
 ```text
-git+https://github.com/chdigda/plugins.git#dev&path:/packages/dsh-session-tweak
+git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-tweak
 ```
+
 주소의 `#path:` 부분을 빼면 저장소 루트(컬렉션 관리자)를 설치합니다. GitHub의 `/tree/main/...` 페이지 주소가 아니라 위 주소를 사용하세요. 설치 주소는 pnpm이 지원하는 Git 하위 디렉터리 형식이며, pnpm 12.16.x에서 루트·하위 경로 설치를 모두 검증했습니다. 다른 Harness 배포본의 pnpm 버전에서는 하위 경로 지원 여부를 확인해야 합니다.
 
 ## 개발·배포

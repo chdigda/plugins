@@ -33,6 +33,21 @@
         "zh": "确认后在下一次 DSH 重启时永久删除会话。"
       },
       "restart": true
+    },
+    {
+      "name": "dsh-session-tweak",
+      "dir": "packages/dsh-session-tweak",
+      "title": {
+        "en": "Session Tweak",
+        "ko": "세션 메시지 수정",
+        "zh": "会话消息编辑"
+      },
+      "description": {
+        "en": "Edit or delete user and assistant messages inline without reopening the session.",
+        "ko": "사용자·봇 메시지를 제자리에서 수정·삭제하며 세션을 다시 열지 않습니다.",
+        "zh": "直接编辑或删除用户与助手消息，无需重新打开会话。"
+      },
+      "restart": false
     }
   ]
 }
