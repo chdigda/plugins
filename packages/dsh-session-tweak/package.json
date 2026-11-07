@@ -1,10 +1,10 @@
 {
   "name": "dsh-session-tweak",
-  "version": "0.1.0",
+  "version": "0.2.1",
   "private": true,
   "license": "MIT",
   "type": "module",
-  "description": "Edit or remove messages from a live DSH session's model context",
+  "description": "Inline user and assistant message editing through direct session JSON rewriting",
   "main": "./index.mjs",
   "exports": {
     ".": "./index.mjs",
@@ -12,15 +12,20 @@
     "./package.json": "./package.json"
   },
   "engines": {
-    "node": ">=22",
-    "dsh": ">=0.2.2-rc.1 <0.3.0"
+    "node": ">=24",
+    "dsh": "0.2.2-rc.1"
   },
   "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "inject": [
         "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-api-session-controller",
         "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-chat",
         "@deepseek-ai/dsh-client-ui-primitives"
       ]
     },
@@ -37,8 +42,11 @@
   },
   "files": [
     "index.mjs",
-    "core.mjs",
+    "lifecycle.mjs",
+    "runtime.mjs",
+    "rewrite.mjs",
     "client.mjs",
+    "cordis.patch.yml",
     "LICENSE",
     "README.md"
   ]

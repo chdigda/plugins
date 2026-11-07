@@ -7,7 +7,7 @@ DeepSeek Harness용 독립 플러그인 모음입니다. 저장소는 하나이�
 | **dsh-plugins** | 컬렉션 관리자. 하위 플러그인 설치, 업데이트 확인, 갱신, 활성화 상태 유지 |
 | [dsh-session-delete](packages/dsh-session-delete/README.md) | 확인 후 다음 DSH 재시작 때 세션 영구 삭제 (Linux·Windows / Node 24+) |
 | [dsh-web-search](packages/dsh-web-search/README.md) | Tavily 검색, Brave 대체 검색, API 키 설정 화면 |
-| [dsh-session-tweak](packages/dsh-session-tweak/README.md) | 모델 컨텍스트에서 사용자 메시지 수정·메시지 제거 |
+| [dsh-session-tweak](packages/dsh-session-tweak/README.md) | 사용자·봇 메시지 인라인 수정·삭제 (원본 JSON 직접 변경, dev) |
 
 ## Harness에서 설치 (링크 하나)
 
@@ -53,7 +53,7 @@ git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-delete
 **세션 트윅**
 
 ```text
-git+https://github.com/chdigda/plugins.git#path:/packages/dsh-session-tweak
+git+https://github.com/chdigda/plugins.git#dev&path:/packages/dsh-session-tweak
 ```
 주소의 `#path:` 부분을 빼면 저장소 루트(컬렉션 관리자)를 설치합니다. GitHub의 `/tree/main/...` 페이지 주소가 아니라 위 주소를 사용하세요. 설치 주소는 pnpm이 지원하는 Git 하위 디렉터리 형식이며, pnpm 12.16.x에서 루트·하위 경로 설치를 모두 검증했습니다. 다른 Harness 배포본의 pnpm 버전에서는 하위 경로 지원 여부를 확인해야 합니다.
 
