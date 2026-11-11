@@ -162,7 +162,12 @@ function scheduleDestinations(task) {
   if (typeof task?.pendingDelivery?.targetSessionId === 'string') ids.push(task.pendingDelivery.targetSessionId);
   return ids;
 }
-export async function assertScheduleClear(home, ids) {
+/**
+ * Drop schedule tasks whose delivery destination is a Session being deleted and forget the deleted Sessions in
+ * their notification lists, so the schedule store keeps decoding after the Session logs are gone. A store in any
+ * other layout is never rewritten; it defers the deletion instead.
+ */
+export async function cleanupSchedule(home, ids) {
   const storage = join(home, 'storages');
   if (!await safePath(home, storage, 'directory', true)) return;
   for (const entry of await readdir(storage, { withFileTypes: true })) {
@@ -174,14 +179,21 @@ export async function assertScheduleClear(home, ids) {
     if (name.startsWith('schedule.json.') && entry.isFile() && !entry.isSymbolicLink()) continue;
     if (/schedule/i.test(name)) throw new Error('알 수 없는 스케줄 저장소가 있어 삭제를 보류합니다: storages/' + name);
   }
-  const path = join(storage, 'schedule.json');
-  if (!await safePath(home, path, 'file', true)) return;
-  let document;
-  try { document = JSON.parse(await readFile(path, 'utf8')); } catch { throw new Error('스케줄 저장소를 해석할 수 없어 삭제를 보류합니다: storages/schedule.json'); }
-  const tasks = document?.tables?.tasks;
-  if (document?.unit?.name !== 'schedule' || !SCHEDULE_VERSIONS.has(document?.unit?.version) || typeof tasks !== 'object' || tasks === null || Array.isArray(tasks)) throw new Error('지원하지 않는 스케줄 저장소 형식이라 삭제를 보류합니다: storages/schedule.json');
-  const blockers = Object.entries(tasks).filter(([, task]) => scheduleDestinations(task).some(id => ids.has(id))).map(([key]) => key);
-  if (blockers.length) throw new Error('예약 작업이 삭제 대상 세션을 목적지로 사용합니다. 먼저 스케줄을 정리하고 다시 예약하세요: ' + blockers.join(', '));
+  const schedulePath = join(storage, 'schedule.json');
+  if (!await safePath(home, schedulePath, 'file', true)) return;
+  let schedule;
+  try { schedule = JSON.parse(await readFile(schedulePath, 'utf8')); } catch { throw new Error('스케줄 저장소를 해석할 수 없어 삭제를 보류합니다: storages/schedule.json'); }
+  const tasks = schedule?.tables?.tasks;
+  if (schedule?.unit?.name !== 'schedule' || !SCHEDULE_VERSIONS.has(schedule?.unit?.version) || typeof tasks !== 'object' || tasks === null || Array.isArray(tasks)) throw new Error('지원하지 않는 스케줄 저장소 형식이라 삭제를 보류합니다: storages/schedule.json');
+  let changed = false;
+  for (const [key, task] of Object.entries(tasks)) {
+    if (scheduleDestinations(task).some(id => ids.has(id))) { delete tasks[key]; changed = true; continue; }
+    if (Array.isArray(task?.involvedSessionIds)) {
+      const kept = task.involvedSessionIds.filter(id => !ids.has(id));
+      if (kept.length !== task.involvedSessionIds.length) { task.involvedSessionIds = kept; changed = true; }
+    }
+  }
+  if (changed) return { schedule, schedulePath };
 }
 export async function cleanupPaths(home, ids) {
   const files = [];
@@ -203,8 +215,8 @@ export async function cleanupPaths(home, ids) {
     workspace.global.archivedSessionIds = workspace.global.archivedSessionIds.filter(id => !ids.has(id));
     workspace.global.pinnedSessionIds = workspace.global.pinnedSessionIds.filter(id => !ids.has(id));
   }
-  await assertScheduleClear(home, ids);
-  return { files, workspace, workspacePath };
+  const schedule = await cleanupSchedule(home, ids);
+  return { files, workspace, workspacePath, schedule: schedule?.schedule, schedulePath: schedule?.schedulePath };
 }
 export async function indexFiles(path) {
   if (path === undefined || path === ':memory:') return [];
@@ -273,6 +285,7 @@ export async function purge(plan, planPath, lock, checkOffline = assertOffline) 
     for (const path of cleanup.files) if (await safePath(plan.home, path, 'file', true)) await unlink(path);
     for (const { path } of indexes) if (await safePath(dirname(path), path, 'file', true)) await unlink(path);
     if (cleanup.workspace) await atomicJson(cleanup.workspacePath, cleanup.workspace);
+    if (cleanup.schedule) await atomicJson(cleanup.schedulePath, cleanup.schedule);
     for (const dir of new Set([...plan.targets.map(t => t.dir), ...cleanup.files.map(dirname), ...indexes.map(f => dirname(f.path))])) await syncDirectory(dir);
     plan.phase = 'complete';
     await atomicJson(planPath, { version: VERSION, ticket: plan.ticket, phase: 'complete', deletedIds: [...ids], completedAt: new Date().toISOString() });
