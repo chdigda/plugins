@@ -154,6 +154,35 @@ export async function validatePlan(plan) {
   }
   return ids;
 }
+const SCHEDULE_VERSIONS = new Set([1, 2]);
+function scheduleDestinations(task) {
+  const ids = [];
+  if (typeof task?.sessionId === 'string') ids.push(task.sessionId);
+  if (typeof task?.target?.sessionId === 'string') ids.push(task.target.sessionId);
+  if (typeof task?.pendingDelivery?.targetSessionId === 'string') ids.push(task.pendingDelivery.targetSessionId);
+  return ids;
+}
+export async function assertScheduleClear(home, ids) {
+  const storage = join(home, 'storages');
+  if (!await safePath(home, storage, 'directory', true)) return;
+  for (const entry of await readdir(storage, { withFileTypes: true })) {
+    const name = entry.name;
+    if (name === 'schedule.json') {
+      if (!entry.isFile() || entry.isSymbolicLink()) throw new Error('알 수 없는 스케줄 저장소 형식이라 삭제를 보류합니다: storages/' + name);
+      continue;
+    }
+    if (name.startsWith('schedule.json.') && entry.isFile() && !entry.isSymbolicLink()) continue;
+    if (/schedule/i.test(name)) throw new Error('알 수 없는 스케줄 저장소가 있어 삭제를 보류합니다: storages/' + name);
+  }
+  const path = join(storage, 'schedule.json');
+  if (!await safePath(home, path, 'file', true)) return;
+  let document;
+  try { document = JSON.parse(await readFile(path, 'utf8')); } catch { throw new Error('스케줄 저장소를 해석할 수 없어 삭제를 보류합니다: storages/schedule.json'); }
+  const tasks = document?.tables?.tasks;
+  if (document?.unit?.name !== 'schedule' || !SCHEDULE_VERSIONS.has(document?.unit?.version) || typeof tasks !== 'object' || tasks === null || Array.isArray(tasks)) throw new Error('지원하지 않는 스케줄 저장소 형식이라 삭제를 보류합니다: storages/schedule.json');
+  const blockers = Object.entries(tasks).filter(([, task]) => scheduleDestinations(task).some(id => ids.has(id))).map(([key]) => key);
+  if (blockers.length) throw new Error('예약 작업이 삭제 대상 세션을 목적지로 사용합니다. 먼저 스케줄을 정리하고 다시 예약하세요: ' + blockers.join(', '));
+}
 export async function cleanupPaths(home, ids) {
   const files = [];
   const cacheDir = join(home, 'storages/session_projcache/sessions');
@@ -174,8 +203,7 @@ export async function cleanupPaths(home, ids) {
     workspace.global.archivedSessionIds = workspace.global.archivedSessionIds.filter(id => !ids.has(id));
     workspace.global.pinnedSessionIds = workspace.global.pinnedSessionIds.filter(id => !ids.has(id));
   }
-  const storage = join(home, 'storages');
-  for (const name of await readdir(storage)) if (/schedule/i.test(name)) throw new Error('스케줄 저장소가 있습니다. 예약 작업 정리 지원 전에는 삭제를 거부합니다.');
+  await assertScheduleClear(home, ids);
   return { files, workspace, workspacePath };
 }
 export async function indexFiles(path) {
