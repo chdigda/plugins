@@ -87,6 +87,50 @@ function erase(event) {
   delete event.sourceEventSeqs;
 }
 
+const CITATION_TYPES = new Set(['session/title', 'session/title-llm-request']);
+
+/**
+ * Keep logged title metadata aligned with the surviving log. Automatic titles
+ * and title requests cite the human messages they were derived from; erasing a
+ * cited message would otherwise leave a reference to a removed seq, which the
+ * released v4 relationship check rejects before anything is written.
+ * Remaining citations survive as-is; a record with no surviving citation is
+ * erased, so the title service can derive a new title from the remaining log.
+ */
+function repairTitleCitations(events, targets, changedSeqs) {
+  for (const event of events) {
+    if (!CITATION_TYPES.has(event.type)) continue;
+    const cited = Array.isArray(event.data?.messageSeqs) ? event.data.messageSeqs : [];
+    if (!cited.some(seq => targets.has(seq))) continue;
+    const retained = cited.filter(seq => !targets.has(seq));
+    if (event.data.source?.kind === 'user') event.data.messageSeqs = [];
+    else if (retained.length > 0) event.data.messageSeqs = retained;
+    else erase(event);
+    changedSeqs.push(event.seq);
+  }
+}
+
+/**
+ * Keep logged tool-result prune records aligned with the surviving surface.
+ * A prune names an exact current surface span, so erasing a node it prices
+ * would leave a dangling span; surviving span members are kept and a prune
+ * with no surviving member is erased with the result it described.
+ */
+function repairPruneSpans(events, targets, changedSeqs) {
+  for (const event of events) {
+    if (event.type !== 'compaction/prune') continue;
+    const shadowed = Array.isArray(event.data?.shadowedSeqs) ? event.data.shadowedSeqs : [];
+    if (!shadowed.some(seq => targets.has(seq))) continue;
+    const retained = shadowed.filter(seq => !targets.has(seq));
+    if (retained.length === 0) erase(event);
+    else {
+      event.data.shadowedSeqs = retained;
+      event.data.shadowedRange = { start: retained[0], end: retained.at(-1) };
+    }
+    changedSeqs.push(event.seq);
+  }
+}
+
 function eraseTargets(originals, events, targets) {
   const previous = [];
   const current = [];
@@ -128,6 +172,8 @@ function eraseTargets(originals, events, targets) {
     if (op === 'append') previous.push(original.seq);
     else if (oldStart >= 0) previous.splice(oldStart, shadowed.length, original.seq);
   }
+  repairPruneSpans(events, targets, changedSeqs);
+  repairTitleCitations(events, targets, changedSeqs);
   return changedSeqs;
 }
 
